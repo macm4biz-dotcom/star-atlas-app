@@ -69,13 +69,28 @@ jobs:
             const { data: issues } = await github.rest.issues.listForRepo({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              state: "open",
+              state: "all",
               per_page: 100,
             });
 
-            const existing = issues.find((issue) => issue.title === title);
+            const existing = issues
+              .filter((issue) => issue.title === title)
+              .sort(
+                (a, b) =>
+                  new Date(b.updated_at || 0).getTime() -
+                  new Date(a.updated_at || 0).getTime(),
+              )[0];
 
             if (existing) {
+              if (existing.state !== "open") {
+                await github.rest.issues.update({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: existing.number,
+                  state: "open",
+                });
+              }
+
               await github.rest.issues.createComment({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
@@ -111,17 +126,30 @@ jobs:
               return;
             }
 
-            await github.rest.issues.createComment({
+            const { data: comments } = await github.rest.issues.listComments({
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: existing.number,
-              body: [
-                "Uptime checks recovered and are passing.",
-                "",
-                `- Time (UTC): ${new Date().toISOString()}`,
-                `- Recovery run: ${runUrl}`,
-              ].join("\\n"),
+              per_page: 100,
             });
+
+            const hasRecoveryComment = comments.some((comment) =>
+              String(comment.body || "").includes("Uptime checks recovered and are passing."),
+            );
+
+            if (!hasRecoveryComment) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: existing.number,
+                body: [
+                  "Uptime checks recovered and are passing.",
+                  "",
+                  `- Time (UTC): ${new Date().toISOString()}`,
+                  `- Recovery run: ${runUrl}`,
+                ].join("\\n"),
+              });
+            }
 
             await github.rest.issues.update({
               owner: context.repo.owner,
