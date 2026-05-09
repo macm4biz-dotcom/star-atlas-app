@@ -6,8 +6,7 @@ WORKDIR /app
 ENV PYTHON=/usr/bin/python3
 RUN apk add --no-cache python3 make g++ \
   linux-headers \
-  && ln -sf /usr/bin/python3 /usr/bin/python \
-  && npm config set python /usr/bin/python3
+  && ln -sf /usr/bin/python3 /usr/bin/python
 
 # Copy workspace files
 COPY package*.json ./
