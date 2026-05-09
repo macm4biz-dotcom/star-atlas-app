@@ -1,0 +1,4 @@
+[phases.setup]
+# Workaround Railway build-daemon apt secret failures.
+# Let Nixpacks skip apt-get entirely for this workspace build.
+aptPkgs = []
