@@ -166,3 +166,28 @@ cd /Users/biz/star-atlas-app
 - `UPTIME_FAILURE_COOLDOWN_MINUTES` - интервал (в минутах), в течение которого повторный failure-комментарий не добавляется (по умолчанию `45`).
 
 Если переменная не задана или задана некорректно, применяется безопасный fallback `45` минут.
+
+## Production Notes (Shared Cache/State)
+
+Для кросс-инстанс кеша API и состояния bot (без локального файла) можно подключить Upstash REST:
+
+- `UPSTASH_REDIS_REST_URL`
+- `UPSTASH_REDIS_REST_TOKEN`
+- `CACHE_KEY_PREFIX` (опционально, по умолчанию `star-atlas:cache`)
+- `BOT_POSTED_IDS_REDIS_KEY` (опционально, по умолчанию `star-atlas:bot:posted_ids`)
+
+Если Upstash переменные не заданы, API и bot автоматически работают в локальном fallback-режиме.
+
+## Production Runbooks
+
+- Incident response: `deploy/runbooks/incident-response.md`
+- Release checklist: `deploy/runbooks/release-checklist.md`
+- Postgres backup/restore: `deploy/runbooks/postgres-backup-restore.md`
+
+## Postgres Backups
+
+Добавлен workflow `Postgres Backup`:
+
+- файл: `.github/workflows/postgres-backup.yml`
+- secret: `DATABASE_URL_BACKUP`
+- optional variable: `BACKUP_RETENTION_DAYS` (по умолчанию `7`)

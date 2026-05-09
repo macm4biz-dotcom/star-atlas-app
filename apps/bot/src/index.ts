@@ -46,8 +46,46 @@ const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || "";
 const TELEGRAM_ARCHIVE_CHAT_ID = process.env.TELEGRAM_ARCHIVE_CHAT_ID || "";
 const STAR_ATLAS_API_BASE = process.env.STAR_ATLAS_API_BASE || "http://127.0.0.1:4100";
 const PUBLISH_INTERVAL_MS = 15 * 60 * 1000;
+const UPSTASH_REDIS_REST_URL = (process.env.UPSTASH_REDIS_REST_URL || "").trim();
+const UPSTASH_REDIS_REST_TOKEN = (process.env.UPSTASH_REDIS_REST_TOKEN || "").trim();
+const BOT_POSTED_IDS_REDIS_KEY =
+  (process.env.BOT_POSTED_IDS_REDIS_KEY || "star-atlas:bot:posted_ids").trim();
+const BOT_SHARED_STATE_ENABLED = Boolean(
+  UPSTASH_REDIS_REST_URL && UPSTASH_REDIS_REST_TOKEN,
+);
+
+async function upstashCommand<T>(command: string[]) {
+  if (!BOT_SHARED_STATE_ENABLED) {
+    return null as T | null;
+  }
+
+  try {
+    const response = await fetch(UPSTASH_REDIS_REST_URL, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${UPSTASH_REDIS_REST_TOKEN}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(command),
+    });
+
+    if (!response.ok) {
+      return null as T | null;
+    }
+
+    const payload = (await response.json()) as { result?: T };
+    return payload.result ?? null;
+  } catch {
+    return null as T | null;
+  }
+}
 
 async function readPostedIds() {
+  const sharedValue = await upstashCommand<string[]>(["SMEMBERS", BOT_POSTED_IDS_REDIS_KEY]);
+  if (Array.isArray(sharedValue)) {
+    return new Set(sharedValue);
+  }
+
   try {
     const raw = await readFile(POSTED_IDS_FILE, "utf-8");
     const parsed = JSON.parse(raw) as { ids?: string[] };
@@ -58,6 +96,15 @@ async function readPostedIds() {
 }
 
 async function writePostedIds(ids: Set<string>) {
+  if (BOT_SHARED_STATE_ENABLED) {
+    await upstashCommand(["DEL", BOT_POSTED_IDS_REDIS_KEY]);
+    const values = Array.from(ids);
+    if (values.length > 0) {
+      await upstashCommand(["SADD", BOT_POSTED_IDS_REDIS_KEY, ...values]);
+    }
+    return;
+  }
+
   await mkdir(dirname(POSTED_IDS_FILE), { recursive: true });
   await writeFile(
     POSTED_IDS_FILE,
@@ -155,6 +202,9 @@ async function runPublisherCycle() {
 }
 
 console.log("[bot] Star Atlas Telegram archive publisher is ready.");
+console.log(
+  `[bot] Posted IDs backend: ${BOT_SHARED_STATE_ENABLED ? "Upstash shared state" : "local file"}`,
+);
 void runPublisherCycle();
 setInterval(() => {
   void runPublisherCycle();

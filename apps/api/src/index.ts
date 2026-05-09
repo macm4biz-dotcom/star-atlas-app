@@ -729,6 +729,10 @@ const NEWS_ARCHIVE_CACHE_TTL_MS = parseDurationMs(
   process.env.NEWS_ARCHIVE_CACHE_TTL_MS,
   5 * 60 * 1000,
 );
+const UPSTASH_REDIS_REST_URL = (process.env.UPSTASH_REDIS_REST_URL || "").trim();
+const UPSTASH_REDIS_REST_TOKEN = (process.env.UPSTASH_REDIS_REST_TOKEN || "").trim();
+const CACHE_KEY_PREFIX = (process.env.CACHE_KEY_PREFIX || "star-atlas:cache").trim();
+const SHARED_CACHE_ENABLED = Boolean(UPSTASH_REDIS_REST_URL && UPSTASH_REDIS_REST_TOKEN);
 
 type CacheEntry<T> = {
   value: T;
@@ -772,6 +776,76 @@ function writeCache<T>(
 
 function clearNewsArchiveCache() {
   newsArchiveCache.clear();
+  void clearSharedCacheByScope("news_archive");
+}
+
+function buildSharedCacheKey(scope: string, key: number) {
+  return `${CACHE_KEY_PREFIX}:${scope}:${key}`;
+}
+
+async function upstashCommand<T>(command: string[]) {
+  if (!SHARED_CACHE_ENABLED) {
+    return null as T | null;
+  }
+
+  try {
+    const response = await fetch(UPSTASH_REDIS_REST_URL, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${UPSTASH_REDIS_REST_TOKEN}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(command),
+    });
+
+    if (!response.ok) {
+      return null as T | null;
+    }
+
+    const payload = (await response.json()) as { result?: T };
+    return payload.result ?? null;
+  } catch {
+    return null as T | null;
+  }
+}
+
+async function readSharedCache<T>(scope: string, key: number) {
+  const cacheKey = buildSharedCacheKey(scope, key);
+  const raw = await upstashCommand<string>(["GET", cacheKey]);
+  if (!raw) {
+    return null;
+  }
+
+  try {
+    return JSON.parse(raw) as T;
+  } catch {
+    return null;
+  }
+}
+
+async function writeSharedCache<T>(scope: string, key: number, value: T, ttlMs: number) {
+  if (ttlMs <= 0) {
+    return;
+  }
+
+  const ttlSeconds = Math.max(1, Math.floor(ttlMs / 1000));
+  const cacheKey = buildSharedCacheKey(scope, key);
+  const serialized = JSON.stringify(value);
+  await upstashCommand(["SET", cacheKey, serialized, "EX", String(ttlSeconds)]);
+}
+
+async function clearSharedCacheByScope(scope: string) {
+  if (!SHARED_CACHE_ENABLED) {
+    return;
+  }
+
+  const pattern = `${CACHE_KEY_PREFIX}:${scope}:*`;
+  const keys = await upstashCommand<string[]>(["KEYS", pattern]);
+  if (!keys || keys.length === 0) {
+    return;
+  }
+
+  await Promise.all(keys.map((key) => upstashCommand(["DEL", key])));
 }
 
 let newsArchiveSyncInFlight: Promise<void> | null = null;
@@ -1818,8 +1892,17 @@ app.get<{
     return cached;
   }
 
+  const sharedCached = await readSharedCache<IntelOverview>("intel_overview", safeLimit);
+  if (sharedCached) {
+    writeCache(intelOverviewCache, safeLimit, sharedCached, INTEL_CACHE_TTL_MS);
+    reply.header("x-cache", "HIT-SHARED");
+    reply.header("cache-control", `public, max-age=${Math.floor(INTEL_CACHE_TTL_MS / 1000)}`);
+    return sharedCached;
+  }
+
   const fresh = await buildIntelOverview(safeLimit);
   writeCache(intelOverviewCache, safeLimit, fresh, INTEL_CACHE_TTL_MS);
+  await writeSharedCache("intel_overview", safeLimit, fresh, INTEL_CACHE_TTL_MS);
   reply.header("x-cache", "MISS");
   reply.header("cache-control", `public, max-age=${Math.floor(INTEL_CACHE_TTL_MS / 1000)}`);
   return fresh;
@@ -1845,6 +1928,17 @@ app.get<{
     return cached;
   }
 
+  const sharedCached = await readSharedCache<NewsArchiveResponse>("news_archive", safeLimit);
+  if (sharedCached) {
+    writeCache(newsArchiveCache, safeLimit, sharedCached, NEWS_ARCHIVE_CACHE_TTL_MS);
+    reply.header("x-cache", "HIT-SHARED");
+    reply.header(
+      "cache-control",
+      `public, max-age=${Math.floor(NEWS_ARCHIVE_CACHE_TTL_MS / 1000)}`,
+    );
+    return sharedCached;
+  }
+
   await syncNewsArchiveIfNeeded();
   const entries = sortByPeriodEndDesc(await readNewsArchiveEntries()).slice(0, safeLimit);
   const fresh: NewsArchiveResponse = {
@@ -1853,6 +1947,7 @@ app.get<{
   };
 
   writeCache(newsArchiveCache, safeLimit, fresh, NEWS_ARCHIVE_CACHE_TTL_MS);
+  await writeSharedCache("news_archive", safeLimit, fresh, NEWS_ARCHIVE_CACHE_TTL_MS);
   reply.header("x-cache", "MISS");
   reply.header(
     "cache-control",
