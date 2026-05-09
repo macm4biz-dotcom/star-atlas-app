@@ -8,6 +8,20 @@ export class ApiRequestError extends Error {
   }
 }
 
+const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || "").replace(/\/$/, "");
+
+function withApiBaseUrl(input: RequestInfo | URL) {
+  if (!API_BASE_URL || typeof input !== "string") {
+    return input;
+  }
+
+  if (input.startsWith("/")) {
+    return `${API_BASE_URL}${input}`;
+  }
+
+  return input;
+}
+
 async function parseErrorMessage(response: Response) {
   const contentType = response.headers.get("content-type") || "";
 
@@ -25,7 +39,7 @@ async function parseErrorMessage(response: Response) {
 }
 
 export async function apiRequest<T>(input: RequestInfo | URL, init?: RequestInit) {
-  const response = await fetch(input, init);
+  const response = await fetch(withApiBaseUrl(input), init);
 
   if (!response.ok) {
     const message = await parseErrorMessage(response);
