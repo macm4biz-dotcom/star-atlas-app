@@ -713,6 +713,67 @@ const STAR_ATLAS_ARCHIVE_WEEKLY_DAYS = Number(
 );
 const NEWS_ARCHIVE_FILE = resolve(API_ROOT_DIR, "data", "news-archive.json");
 
+function parseDurationMs(value: string | undefined, fallbackMs: number) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    return fallbackMs;
+  }
+  return Math.floor(parsed);
+}
+
+const INTEL_CACHE_TTL_MS = parseDurationMs(
+  process.env.INTEL_CACHE_TTL_MS,
+  5 * 60 * 1000,
+);
+const NEWS_ARCHIVE_CACHE_TTL_MS = parseDurationMs(
+  process.env.NEWS_ARCHIVE_CACHE_TTL_MS,
+  5 * 60 * 1000,
+);
+
+type CacheEntry<T> = {
+  value: T;
+  expiresAt: number;
+};
+
+const intelOverviewCache = new Map<number, CacheEntry<IntelOverview>>();
+const newsArchiveCache = new Map<number, CacheEntry<NewsArchiveResponse>>();
+
+function readCache<T>(cache: Map<number, CacheEntry<T>>, key: number) {
+  const now = Date.now();
+  const entry = cache.get(key);
+
+  if (!entry) {
+    return null;
+  }
+
+  if (entry.expiresAt <= now) {
+    cache.delete(key);
+    return null;
+  }
+
+  return entry.value;
+}
+
+function writeCache<T>(
+  cache: Map<number, CacheEntry<T>>,
+  key: number,
+  value: T,
+  ttlMs: number,
+) {
+  if (ttlMs <= 0) {
+    return;
+  }
+
+  cache.set(key, {
+    value,
+    expiresAt: Date.now() + ttlMs,
+  });
+}
+
+function clearNewsArchiveCache() {
+  newsArchiveCache.clear();
+}
+
 let newsArchiveSyncInFlight: Promise<void> | null = null;
 
 function stripHtmlTags(value: string) {
@@ -1686,6 +1747,7 @@ async function syncNewsArchiveIfNeeded(options?: { forceGenesis?: boolean }) {
       new Map(sortByPeriodEndDesc(entries).map((entry) => [entry.id, entry])).values(),
     );
     await writeNewsArchiveEntries(unique);
+    clearNewsArchiveCache();
   })().finally(() => {
     newsArchiveSyncInFlight = null;
   });
@@ -1745,31 +1807,64 @@ app.get<{
   Querystring: {
     limit?: number;
   };
-}>("/api/intel/overview", async (request) => {
+}>("/api/intel/overview", async (request, reply) => {
   const limit = Number(request.query.limit || 12);
-  return buildIntelOverview(Number.isFinite(limit) ? limit : 12);
+  const safeLimit = Number.isFinite(limit) ? Math.max(3, Math.min(limit, 30)) : 12;
+  const cached = readCache(intelOverviewCache, safeLimit);
+
+  if (cached) {
+    reply.header("x-cache", "HIT");
+    reply.header("cache-control", `public, max-age=${Math.floor(INTEL_CACHE_TTL_MS / 1000)}`);
+    return cached;
+  }
+
+  const fresh = await buildIntelOverview(safeLimit);
+  writeCache(intelOverviewCache, safeLimit, fresh, INTEL_CACHE_TTL_MS);
+  reply.header("x-cache", "MISS");
+  reply.header("cache-control", `public, max-age=${Math.floor(INTEL_CACHE_TTL_MS / 1000)}`);
+  return fresh;
 });
 
 app.get<{
   Querystring: {
     limit?: number;
   };
-}>("/api/news/archive", async (request): Promise<NewsArchiveResponse> => {
-  await syncNewsArchiveIfNeeded();
+}>("/api/news/archive", async (request, reply): Promise<NewsArchiveResponse> => {
   const requestedLimit = Number(request.query.limit || 30);
   const safeLimit = Number.isFinite(requestedLimit)
     ? Math.max(1, Math.min(requestedLimit, 120))
     : 30;
+
+  const cached = readCache(newsArchiveCache, safeLimit);
+  if (cached) {
+    reply.header("x-cache", "HIT");
+    reply.header(
+      "cache-control",
+      `public, max-age=${Math.floor(NEWS_ARCHIVE_CACHE_TTL_MS / 1000)}`,
+    );
+    return cached;
+  }
+
+  await syncNewsArchiveIfNeeded();
   const entries = sortByPeriodEndDesc(await readNewsArchiveEntries()).slice(0, safeLimit);
-  return {
+  const fresh: NewsArchiveResponse = {
     generatedAt: new Date().toISOString(),
     entries,
   };
+
+  writeCache(newsArchiveCache, safeLimit, fresh, NEWS_ARCHIVE_CACHE_TTL_MS);
+  reply.header("x-cache", "MISS");
+  reply.header(
+    "cache-control",
+    `public, max-age=${Math.floor(NEWS_ARCHIVE_CACHE_TTL_MS / 1000)}`,
+  );
+  return fresh;
 });
 
 app.post<{ Querystring: { force?: string } }>("/api/news/archive/sync", async (request) => {
   const force = String(request.query.force || "0") === "1";
   await syncNewsArchiveIfNeeded({ forceGenesis: force });
+  clearNewsArchiveCache();
   return {
     ok: true,
     force,

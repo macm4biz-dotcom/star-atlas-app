@@ -144,3 +144,17 @@ cd /Users/biz/star-atlas-app
 - агрегируется обзор по официальному сайту, Medium, X и Discord
 - формируются `highlights` и `conclusions` для итоговой аналитики
 - endpoint: `GET /api/intel/overview?limit=14`
+
+## Production Notes (API Cache)
+
+Для снижения нагрузки и зависимости от внешних источников в API включен TTL-кеш:
+
+- `GET /api/intel/overview` (по умолчанию 5 минут)
+- `GET /api/news/archive` (по умолчанию 5 минут)
+
+Переменные окружения:
+
+- `INTEL_CACHE_TTL_MS` - TTL кеша intel в миллисекундах (по умолчанию `300000`)
+- `NEWS_ARCHIVE_CACHE_TTL_MS` - TTL кеша архива в миллисекундах (по умолчанию `300000`)
+
+Значение `0` отключает кеш для соответствующего endpoint.
