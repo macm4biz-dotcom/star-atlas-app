@@ -18,7 +18,7 @@ export default defineConfig({
   server: {
     host: "0.0.0.0",
     port: 5173,
-    allowedHosts: [".trycloudflare.com"],
+    allowedHosts: [".trycloudflare.com", ".up.railway.app"],
     proxy: {
       "/api": "http://127.0.0.1:4100",
       "/health": "http://127.0.0.1:4100",
