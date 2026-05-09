@@ -8,7 +8,21 @@ export class ApiRequestError extends Error {
   }
 }
 
-const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || "").replace(/\/$/, "");
+const RAILWAY_API_BASE_BY_WEB_HOST: Record<string, string> = {
+  "web-production-1b799.up.railway.app":
+    "https://star-atlasapi-production.up.railway.app",
+};
+
+const runtimeApiBaseUrl =
+  typeof window !== "undefined"
+    ? RAILWAY_API_BASE_BY_WEB_HOST[window.location.hostname] || ""
+    : "";
+
+const API_BASE_URL =
+  (import.meta.env.VITE_API_BASE_URL || runtimeApiBaseUrl || "").replace(
+    /\/$/,
+    "",
+  );
 
 function withApiBaseUrl(input: RequestInfo | URL) {
   if (!API_BASE_URL || typeof input !== "string") {
