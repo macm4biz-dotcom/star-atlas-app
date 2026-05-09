@@ -1,0 +1,107 @@
+version: '3.9'
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: star_atlas_postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-star_atlas}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: star_atlas_redis
+    command: redis-server --appendonly yes
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  api:
+    build:
+      context: ..
+      dockerfile: apps/api/Dockerfile
+    container_name: star_atlas_api
+    environment:
+      PORT: ${PORT:-4100}
+      HOST: ${HOST:-0.0.0.0}
+      SOLANA_RPC_URL: ${SOLANA_RPC_URL:-https://api.mainnet-beta.solana.com}
+      DATABASE_URL: ${DATABASE_URL:-postgresql://postgres:postgres@postgres:5432/star_atlas}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379}
+      STAR_ATLAS_COLLECTIONS: ${STAR_ATLAS_COLLECTIONS:-staratlas,star atlas,star atlas ships,star atlas crew,sage labs,sage}
+      STAR_ATLAS_COLLECTION_KEYWORDS: ${STAR_ATLAS_COLLECTION_KEYWORDS:-star atlas,staratlas,sage,fimbul,calico,opal,jogoor,vzus,pearce,oni,mud,c4}
+      STAR_ATLAS_OFFICIAL_URL: ${STAR_ATLAS_OFFICIAL_URL:-https://staratlas.com/}
+      STAR_ATLAS_NEWS_URL: ${STAR_ATLAS_NEWS_URL:-https://staratlas.com/news}
+      STAR_ATLAS_COMMUNITY_URL: ${STAR_ATLAS_COMMUNITY_URL:-https://staratlas.com/community}
+      STAR_ATLAS_MEDIUM_RSS_URL: ${STAR_ATLAS_MEDIUM_RSS_URL:-https://medium.com/feed/star-atlas}
+      STAR_ATLAS_X_URL: ${STAR_ATLAS_X_URL:-https://x.com/staratlas}
+      STAR_ATLAS_DISCORD_INVITE_URL: ${STAR_ATLAS_DISCORD_INVITE_URL:-https://discord.com/invite/staratlas}
+    ports:
+      - "4100:4100"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:4100/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  web:
+    build:
+      context: ..
+      dockerfile: apps/web/Dockerfile
+    container_name: star_atlas_web
+    environment:
+      API_URL: ${API_URL:-http://api:4100}
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "${STAR_ATLAS_WEB_PORT:-5173}:80"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  bot:
+    build:
+      context: ..
+      dockerfile: apps/bot/Dockerfile
+    container_name: star_atlas_bot
+    environment:
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      DISCORD_BOT_TOKEN: ${DISCORD_BOT_TOKEN:-}
+      API_URL: ${API_URL:-http://api:4100}
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
+  redis_data:

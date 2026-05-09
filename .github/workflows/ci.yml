@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  pull_request:
+
+jobs:
+  quality-gates:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build monorepo
+        run: npm run build
+
+      - name: Lint web
+        run: npm run lint -w web
+
+      - name: Typecheck shared
+        run: npm run typecheck -w @star-atlas/shared
+
+      - name: Typecheck api
+        run: npm run typecheck -w @star-atlas/api
+
+      - name: Typecheck bot
+        run: npm run typecheck -w @star-atlas/bot

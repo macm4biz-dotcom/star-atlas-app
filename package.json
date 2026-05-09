@@ -1,0 +1,25 @@
+{
+  "name": "star-atlas-app",
+  "version": "1.0.0",
+  "description": "Star Atlas analytics platform (web + api + bot)",
+  "scripts": {
+    "dev": "concurrently -n web,api,bot -c cyan,green,magenta \"npm run dev -w web\" \"npm run dev -w @star-atlas/api\" \"npm run dev -w @star-atlas/bot\"",
+    "dev:web": "npm run dev -w web",
+    "dev:api": "npm run dev -w @star-atlas/api",
+    "dev:bot": "npm run dev -w @star-atlas/bot",
+    "build": "npm run build -w @star-atlas/shared && npm run build -w @star-atlas/api && npm run build -w @star-atlas/bot && npm run build -w web",
+    "smoke:api": "curl -fsS http://127.0.0.1:4100/health && curl -fsS \"http://127.0.0.1:4100/api/intel/overview?limit=1\" > /dev/null"
+  },
+  "type": "module",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "devDependencies": {
+    "concurrently": "^9.2.1",
+    "prettier": "^3.8.3",
+    "react": "^19.2.4",
+    "react-dom": "^19.2.4"
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "name": "@star-atlas/bot",
+  "version": "1.0.0",
+  "description": "Star Atlas Telegram bot entrypoint",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "start": "node dist/index.js",
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit"
+  },
+  "type": "module",
+  "private": true,
+  "dependencies": {
+    "@star-atlas/shared": "1.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.12.2",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3"
+  }
+}
