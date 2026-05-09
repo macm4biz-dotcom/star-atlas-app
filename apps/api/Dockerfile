@@ -12,9 +12,10 @@ RUN apk add --no-cache python3 make g++ \
 # Copy workspace files
 COPY package*.json ./
 COPY apps/api/package.json apps/api/package.json
-COPY apps/web/package.json apps/web/package.json
-COPY apps/bot/package.json apps/bot/package.json
 COPY packages/shared/package.json packages/shared/package.json
+
+# Keep only required workspaces in container install context.
+RUN node -e "const fs=require('fs');const p='package.json';const pkg=JSON.parse(fs.readFileSync(p,'utf8'));pkg.workspaces=['apps/api','packages/shared'];fs.writeFileSync(p,JSON.stringify(pkg,null,2));"
 
 # Install only API + shared dependencies to avoid unrelated native modules from other workspaces.
 RUN npm ci --production=false --workspace=@star-atlas/shared --workspace=@star-atlas/api \
