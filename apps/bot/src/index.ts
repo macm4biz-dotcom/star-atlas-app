@@ -202,6 +202,7 @@ async function runPublisherCycle() {
 }
 
 console.log("[bot] Star Atlas Telegram archive publisher is ready.");
+console.log(`[bot] deployVersion=${process.env.RAILWAY_GIT_COMMIT_SHA || "local"}`);
 console.log(
   `[bot] Posted IDs backend: ${BOT_SHARED_STATE_ENABLED ? "Upstash shared state" : "local file"}`,
 );
