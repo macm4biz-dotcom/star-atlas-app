@@ -16,8 +16,9 @@ COPY apps/web/package.json apps/web/package.json
 COPY apps/bot/package.json apps/bot/package.json
 COPY packages/shared/package.json packages/shared/package.json
 
-# Install dependencies
-RUN npm ci --production=false && npm cache clean --force
+# Install only API + shared dependencies to avoid unrelated native modules from other workspaces.
+RUN npm ci --production=false --workspace=@star-atlas/shared --workspace=@star-atlas/api \
+  && npm cache clean --force
 
 # Copy source code
 COPY . .
