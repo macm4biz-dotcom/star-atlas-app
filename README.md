@@ -158,3 +158,11 @@ cd /Users/biz/star-atlas-app
 - `NEWS_ARCHIVE_CACHE_TTL_MS` - TTL кеша архива в миллисекундах (по умолчанию `300000`)
 
 Значение `0` отключает кеш для соответствующего endpoint.
+
+## Production Notes (Uptime Alerts)
+
+Для workflow [`.github/workflows/uptime-check.yml`](.github/workflows/uptime-check.yml) можно настраивать cooldown для failure-комментариев через Repository Variable в GitHub:
+
+- `UPTIME_FAILURE_COOLDOWN_MINUTES` - интервал (в минутах), в течение которого повторный failure-комментарий не добавляется (по умолчанию `45`).
+
+Если переменная не задана или задана некорректно, применяется безопасный fallback `45` минут.
