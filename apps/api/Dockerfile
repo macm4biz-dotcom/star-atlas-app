@@ -2,6 +2,9 @@ FROM node:22-alpine
 
 WORKDIR /app
 
+# Native modules (e.g. usb) require node-gyp toolchain during npm ci.
+RUN apk add --no-cache python3 make g++
+
 # Copy workspace files
 COPY package*.json ./
 COPY apps/api/package.json apps/api/package.json
