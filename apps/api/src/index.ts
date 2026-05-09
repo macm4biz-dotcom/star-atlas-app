@@ -1849,10 +1849,11 @@ app.get("/", async () => {
 
 app.get(
   "/health",
-  async (): Promise<HealthResponse> => ({
+  async () => ({
     status: "ok",
     service: "star-atlas-api",
     time: new Date().toISOString(),
+    sharedCacheEnabled: SHARED_CACHE_ENABLED,
   }),
 );
 

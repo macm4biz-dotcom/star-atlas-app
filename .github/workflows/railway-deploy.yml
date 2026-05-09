@@ -1,101 +1,35 @@
 name: Railway Deploy
 
+# Railway deploys automatically via its own GitHub integration.
+# This workflow only runs smoke tests after Railway deploys.
 on:
   push:
     branches:
       - main
-      - master
-      - production
   workflow_dispatch:
 
-env:
-  REGISTRY: ghcr.io
-  IMAGE_NAME_WEB: ${{ github.repository }}/web
-  IMAGE_NAME_API: ${{ github.repository }}/api
-  IMAGE_NAME_BOT: ${{ github.repository }}/bot
-
 jobs:
-  build-and-push:
+  smoke-test:
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
-
+    # Give Railway time to deploy before running smoke tests
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - name: Wait for Railway deploy
+        run: sleep 120
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Log in to Container Registry
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      # Build and push Web app
-      - name: Build and push Web Docker image
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          file: ./apps/web/Dockerfile
-          push: true
-          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME_WEB }}:latest,${{ env.REGISTRY }}/${{ env.IMAGE_NAME_WEB }}:${{ github.sha }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-      # Build and push API app
-      - name: Build and push API Docker image
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          file: ./apps/api/Dockerfile
-          push: true
-          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME_API }}:latest,${{ env.REGISTRY }}/${{ env.IMAGE_NAME_API }}:${{ github.sha }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-      # Build and push Bot app
-      - name: Build and push Bot Docker image
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          file: ./apps/bot/Dockerfile
-          push: true
-          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME_BOT }}:latest,${{ env.REGISTRY }}/${{ env.IMAGE_NAME_BOT }}:${{ github.sha }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-  deploy-to-railway:
-    needs: build-and-push
-    runs-on: ubuntu-latest
-    if: success()
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Deploy to Railway
-        env:
-          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+      - name: Smoke test API
         run: |
-          # Install Railway CLI
-          npm i -g @railway/cli
-          
-          # Deploy services
-          railway up \
-            --service web \
-            --service api \
-            --service bot \
-            --environment production
+          STATUS=$(curl -o /dev/null -s -w "%{http_code}" https://star-atlasapi-production.up.railway.app/health)
+          echo "API health status: $STATUS"
+          [ "$STATUS" = "200" ] || exit 1
 
-      - name: Notify deployment
-        if: always()
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const status = context.job.status === 'success' ? '✅ Success' : '❌ Failed'
-            const message = `${status}: Deployment to Railway for commit ${context.sha.substring(0, 7)}`
-            console.log(message)
+      - name: Smoke test Web
+        run: |
+          STATUS=$(curl -o /dev/null -s -w "%{http_code}" https://web-production-1b799.up.railway.app/)
+          echo "Web status: $STATUS"
+          [ "$STATUS" = "200" ] || exit 1
+
+      - name: Verify shared cache config
+        run: |
+          HEALTH=$(curl -s https://star-atlasapi-production.up.railway.app/health)
+          echo "Health response: $HEALTH"
+          echo "$HEALTH" | grep -q '"sharedCacheEnabled":true' && echo "✅ Shared cache ENABLED" || echo "⚠️ Shared cache DISABLED (check UPSTASH vars in Railway)"
