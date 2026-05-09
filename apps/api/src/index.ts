@@ -1854,6 +1854,7 @@ app.get(
     service: "star-atlas-api",
     time: new Date().toISOString(),
     sharedCacheEnabled: SHARED_CACHE_ENABLED,
+    cacheMode: SHARED_CACHE_ENABLED ? "upstash" : "memory",
     deployVersion: process.env.RAILWAY_GIT_COMMIT_SHA || "local",
   }),
 );
