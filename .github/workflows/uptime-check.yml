@@ -1,0 +1,47 @@
+name: Uptime Check
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "*/15 * * * *"
+
+jobs:
+  uptime:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Check web availability
+        run: |
+          set -euo pipefail
+          echo "Checking web root..."
+          status=$(curl -sS -o /tmp/web_root.json -w "%{http_code}" "https://web-production-1b799.up.railway.app/")
+          echo "web / -> HTTP ${status}"
+          test "${status}" = "200"
+
+      - name: Check api health
+        run: |
+          set -euo pipefail
+          echo "Checking API /health..."
+          status=$(curl -sS -o /tmp/api_health.json -w "%{http_code}" "https://star-atlasapi-production.up.railway.app/health")
+          echo "api /health -> HTTP ${status}"
+          test "${status}" = "200"
+
+      - name: Check api business endpoint
+        run: |
+          set -euo pipefail
+          echo "Checking API /api/intel/overview..."
+          status=$(curl -sS -o /tmp/api_intel.json -w "%{http_code}" "https://star-atlasapi-production.up.railway.app/api/intel/overview?limit=1")
+          echo "api /api/intel/overview -> HTTP ${status}"
+          test "${status}" = "200"
+
+      - name: Upload response snapshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: uptime-response-snapshots
+          path: |
+            /tmp/web_root.json
+            /tmp/api_health.json
+            /tmp/api_intel.json
+          if-no-files-found: ignore
