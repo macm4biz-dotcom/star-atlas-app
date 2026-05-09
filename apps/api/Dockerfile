@@ -18,6 +18,7 @@ RUN node -e "const fs=require('fs');const p='package.json';const pkg=JSON.parse(
 
 # Install only API + shared dependencies to avoid unrelated native modules from other workspaces.
 RUN npm ci --production=false --workspace=@star-atlas/shared --workspace=@star-atlas/api \
+  --ignore-scripts \
   && npm cache clean --force
 
 # Copy source code
