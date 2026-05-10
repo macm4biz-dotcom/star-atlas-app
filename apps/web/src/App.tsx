@@ -52,6 +52,9 @@ type MarketListing = {
   escrowTxSignature?: string;
   escrowWallet?: string;
   escrowedAt?: string;
+  settlementTxSignature?: string;
+  settledAt?: string;
+  settlementError?: string;
   createdAt: string;
 };
 
@@ -69,6 +72,19 @@ type MarketConfig = {
   platformFeeWallet: string;
   platformFeeBps: number;
   usdcMint: string;
+  escrowWallet: string;
+  autoSettlementEnabled: boolean;
+};
+
+type MarketBuyResponse = {
+  success: true;
+  listing: MarketListing;
+  message: string;
+  settlement?: {
+    status: "completed" | "pending";
+    txSignature?: string;
+    reason?: string;
+  };
 };
 
 type BarterOffer = {
@@ -1012,7 +1028,7 @@ function App() {
 
       const mintPubkey = new PublicKey(sellPickerSelected.mint);
       const escrowOwner = new PublicKey(
-        marketConfig?.platformFeeWallet ?? "YQmg9nTsvVLUgtj35pY8WUPRVGHaz7KfmaCgPuS6bwY",
+        marketConfig?.escrowWallet ?? "YQmg9nTsvVLUgtj35pY8WUPRVGHaz7KfmaCgPuS6bwY",
       );
       const sellerAta = getAta(mintPubkey, publicKey);
       const escrowAta = getAta(mintPubkey, escrowOwner);
@@ -1080,7 +1096,7 @@ function App() {
     }
 
     try {
-      await apiRequest(`/api/market/listings/${listingId}/buy`, {
+      const result = await apiRequest<MarketBuyResponse>(`/api/market/listings/${listingId}/buy`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -1089,7 +1105,15 @@ function App() {
         body: JSON.stringify({ txSignature }),
       });
 
-      setListingsMessage("Покупка подтверждена.");
+      if (result.settlement?.status === "completed") {
+        setListingsMessage("Оплата подтверждена, NFT автоматически передан покупателю.");
+      } else if (result.settlement?.status === "pending") {
+        setListingsMessage(
+          `Оплата подтверждена, но settlement в ожидании: ${result.settlement.reason ?? "без причины"}`,
+        );
+      } else {
+        setListingsMessage(result.message || "Покупка подтверждена.");
+      }
       await loadListings();
     } catch (buyError) {
       setListingsMessage("Ошибка покупки лота.");
@@ -2538,10 +2562,19 @@ function App() {
                       <p className="market-listing-escrow">
                         Escrow: {listing.escrowTxSignature ? "On-chain" : "Not confirmed"}
                       </p>
+                      <p className="market-listing-settlement">
+                        Settlement: {listing.settlementTxSignature ? "Completed" : listing.status === "sold" ? "Pending" : "Not started"}
+                      </p>
                       <p className="market-listing-price">{listing.priceUsd.toLocaleString("ru-RU", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USDC</p>
                       <p className="market-listing-wallet">Продавец: {listing.sellerWallet.slice(0, 4)}...{listing.sellerWallet.slice(-4)}</p>
                       {listing.escrowTxSignature ? (
                         <a href={`https://solscan.io/tx/${listing.escrowTxSignature}`} target="_blank" rel="noreferrer">Escrow Tx в Solscan</a>
+                      ) : null}
+                      {listing.settlementTxSignature ? (
+                        <a href={`https://solscan.io/tx/${listing.settlementTxSignature}`} target="_blank" rel="noreferrer">Settlement Tx в Solscan</a>
+                      ) : null}
+                      {listing.settlementError ? (
+                        <p className="market-listing-settlement-error">{listing.settlementError}</p>
                       ) : null}
                       {listing.status === "sold" && listing.txSignature ? (
                         <a href={`https://solscan.io/tx/${listing.txSignature}`} target="_blank" rel="noreferrer">Tx в Solscan</a>
@@ -2622,7 +2655,9 @@ function App() {
                   </div>
                 </div>
 
-                <p className="note">Оплата только в USDC. Комиссия платформы: {(marketConfig?.platformFeeBps ?? 100) / 100}%.</p>
+                <p className="note">
+                  Оплата только в USDC. Комиссия платформы: {(marketConfig?.platformFeeBps ?? 100) / 100}%. Auto-settlement: {marketConfig?.autoSettlementEnabled ? "включен" : "выключен"}.
+                </p>
 
                 <label htmlFor="new-listing-note">Комментарий</label>
                 <input

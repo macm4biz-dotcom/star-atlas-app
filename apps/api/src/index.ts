@@ -7,7 +7,13 @@ import { dirname, resolve } from "node:path";
 import { randomBytes } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { config as loadEnv } from "dotenv";
-import { Connection, PublicKey, Transaction } from "@solana/web3.js";
+import {
+  Connection,
+  Keypair,
+  PublicKey,
+  Transaction,
+  TransactionInstruction,
+} from "@solana/web3.js";
 import nacl from "tweetnacl";
 import type {
   DashboardSnapshot,
@@ -38,6 +44,87 @@ const PLATFORM_FEE_WALLET =
   process.env.PLATFORM_FEE_WALLET || "YQmg9nTsvVLUgtj35pY8WUPRVGHaz7KfmaCgPuS6bwY";
 const PLATFORM_FEE_BPS = 100; // 1% = 100 basis points
 const USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+const SPL_TOKEN_PROGRAM = new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA");
+const ATA_PROGRAM = new PublicKey("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJe1Y");
+const SYSTEM_PROGRAM = new PublicKey("11111111111111111111111111111111");
+
+function parseEscrowSecretKey(secret?: string) {
+  if (!secret) return null;
+  const normalized = secret.trim();
+  if (!normalized) return null;
+
+  try {
+    if (normalized.startsWith("[")) {
+      const parsed = JSON.parse(normalized) as number[];
+      return Keypair.fromSecretKey(Uint8Array.from(parsed));
+    }
+    const decoded = Buffer.from(normalized, "base64");
+    if (decoded.length > 0) {
+      return Keypair.fromSecretKey(Uint8Array.from(decoded));
+    }
+  } catch {
+    return null;
+  }
+
+  return null;
+}
+
+const MARKET_ESCROW_KEYPAIR = parseEscrowSecretKey(process.env.MARKET_ESCROW_SECRET_KEY);
+const MARKET_ESCROW_WALLET =
+  MARKET_ESCROW_KEYPAIR?.publicKey.toBase58() ||
+  process.env.MARKET_ESCROW_WALLET ||
+  PLATFORM_FEE_WALLET;
+
+function getAta(mint: PublicKey, owner: PublicKey): PublicKey {
+  return PublicKey.findProgramAddressSync(
+    [owner.toBuffer(), SPL_TOKEN_PROGRAM.toBuffer(), mint.toBuffer()],
+    ATA_PROGRAM,
+  )[0];
+}
+
+function splTransferInstruction(
+  source: PublicKey,
+  destination: PublicKey,
+  authority: PublicKey,
+  amount: bigint,
+) {
+  const amountBytes: number[] = [];
+  let n = amount;
+  for (let i = 0; i < 8; i++) {
+    amountBytes.push(Number(n & 0xffn));
+    n >>= 8n;
+  }
+
+  return new TransactionInstruction({
+    keys: [
+      { pubkey: source, isSigner: false, isWritable: true },
+      { pubkey: destination, isSigner: false, isWritable: true },
+      { pubkey: authority, isSigner: true, isWritable: false },
+    ],
+    programId: SPL_TOKEN_PROGRAM,
+    data: Buffer.from([3, ...amountBytes]),
+  });
+}
+
+function createAtaIdempotentInstruction(
+  payer: PublicKey,
+  ata: PublicKey,
+  owner: PublicKey,
+  mint: PublicKey,
+) {
+  return new TransactionInstruction({
+    keys: [
+      { pubkey: payer, isSigner: true, isWritable: true },
+      { pubkey: ata, isSigner: false, isWritable: true },
+      { pubkey: owner, isSigner: false, isWritable: false },
+      { pubkey: mint, isSigner: false, isWritable: false },
+      { pubkey: SYSTEM_PROGRAM, isSigner: false, isWritable: false },
+      { pubkey: SPL_TOKEN_PROGRAM, isSigner: false, isWritable: false },
+    ],
+    programId: ATA_PROGRAM,
+    data: Buffer.from([1]),
+  });
+}
 const API_SRC_DIR = dirname(fileURLToPath(import.meta.url));
 const API_ROOT_DIR = resolve(API_SRC_DIR, "..");
 
@@ -213,6 +300,9 @@ type MarketListing = {
   escrowTxSignature?: string;
   escrowWallet?: string;
   escrowedAt?: string;
+  settlementTxSignature?: string;
+  settledAt?: string;
+  settlementError?: string;
   createdAt: string;
 };
 
@@ -2941,7 +3031,7 @@ app.post<{
   listing.mint = normalizedMint;
   if (image) listing.image = String(image).trim();
   listing.escrowTxSignature = normalizedEscrowTx;
-  listing.escrowWallet = PLATFORM_FEE_WALLET;
+  listing.escrowWallet = MARKET_ESCROW_WALLET;
   listing.escrowedAt = new Date().toISOString();
 
   marketListings.unshift(listing);
@@ -2982,16 +3072,78 @@ app.post<{
     return reply.code(400).send({ error: "Seller cannot buy own listing" });
   }
 
-  listing.status = "sold";
-  listing.buyerWallet = buyerWallet;
+  if (!listing.mint) {
+    return reply.code(409).send({ error: "Listing mint is missing" });
+  }
 
   const txSignature = String(request.body?.txSignature || "").trim();
-  if (txSignature) listing.txSignature = txSignature;
+  if (!txSignature) {
+    return reply.code(400).send({ error: "txSignature is required" });
+  }
+
+  listing.status = "sold";
+  listing.buyerWallet = buyerWallet;
+  listing.txSignature = txSignature;
+
+  const settlement: {
+    status: "completed" | "pending";
+    txSignature?: string;
+    reason?: string;
+  } = { status: "pending" };
+
+  if (!MARKET_ESCROW_KEYPAIR) {
+    settlement.reason = "MARKET_ESCROW_SECRET_KEY is not configured";
+    listing.settlementError = settlement.reason;
+  } else if (
+    listing.escrowWallet &&
+    listing.escrowWallet !== MARKET_ESCROW_KEYPAIR.publicKey.toBase58()
+  ) {
+    settlement.reason = "Escrow wallet does not match configured secret";
+    listing.settlementError = settlement.reason;
+  } else {
+    try {
+      const connection = new Connection(SOLANA_RPC_URL, "confirmed");
+      const mintPubkey = new PublicKey(listing.mint);
+      const escrowOwner = MARKET_ESCROW_KEYPAIR.publicKey;
+      const buyerPubkey = new PublicKey(buyerWallet);
+      const escrowAta = getAta(mintPubkey, escrowOwner);
+      const buyerAta = getAta(mintPubkey, buyerPubkey);
+
+      const tx = new Transaction();
+      tx.add(createAtaIdempotentInstruction(escrowOwner, buyerAta, buyerPubkey, mintPubkey));
+      tx.add(splTransferInstruction(escrowAta, buyerAta, escrowOwner, 1n));
+      tx.feePayer = escrowOwner;
+
+      const { blockhash } = await connection.getLatestBlockhash("confirmed");
+      tx.recentBlockhash = blockhash;
+      tx.sign(MARKET_ESCROW_KEYPAIR);
+
+      const settlementSig = await connection.sendRawTransaction(tx.serialize(), {
+        skipPreflight: false,
+      });
+      await connection.confirmTransaction(settlementSig, "confirmed");
+
+      listing.settlementTxSignature = settlementSig;
+      listing.settledAt = new Date().toISOString();
+      listing.settlementError = undefined;
+      settlement.status = "completed";
+      settlement.txSignature = settlementSig;
+    } catch (error) {
+      settlement.status = "pending";
+      settlement.reason =
+        error instanceof Error ? error.message : "Failed to settle escrow NFT";
+      listing.settlementError = settlement.reason;
+    }
+  }
 
   return {
     success: true,
     listing,
-    message: "Purchase recorded successfully",
+    settlement,
+    message:
+      settlement.status === "completed"
+        ? "Purchase recorded and NFT transferred to buyer"
+        : "Purchase recorded; NFT settlement pending",
   };
 });
 
@@ -3542,6 +3694,8 @@ const start = async () => {
       platformFeeWallet: PLATFORM_FEE_WALLET,
       platformFeeBps: PLATFORM_FEE_BPS,
       usdcMint: USDC_MINT,
+      escrowWallet: MARKET_ESCROW_WALLET,
+      autoSettlementEnabled: Boolean(MARKET_ESCROW_KEYPAIR),
     };
   });
 

@@ -386,6 +386,18 @@ th {
   color: #7fe7d8;
 }
 
+.market-listing-settlement {
+  margin: 0;
+  font-size: 12px;
+  color: #9de3ff;
+}
+
+.market-listing-settlement-error {
+  margin: 0;
+  font-size: 12px;
+  color: #ff8f96;
+}
+
 .market-listing-price {
   margin: 0;
   font-weight: 700;
