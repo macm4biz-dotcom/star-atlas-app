@@ -16,7 +16,7 @@ import {
 } from "@solana/web3.js";
 import { AnchorProvider, Program, Wallet } from "@staratlas/anchor";
 import { readAllFromRPC } from "@staratlas/data-source";
-import { MineItem, Resource, SAGE_IDL } from "@staratlas/sage";
+import { Fleet, MineItem, Resource, SAGE_IDL } from "@staratlas/sage";
 import nacl from "tweetnacl";
 import type {
   DashboardSnapshot,
@@ -1389,11 +1389,11 @@ function getUtcDayEndTtlMs(date: Date) {
   return Math.max(1, nextReset.getTime() - date.getTime() + 24 * 60 * 60 * 1000);
 }
 
-function splitFleetsAcrossFactions(totalFleets: number) {
-  const mud = Math.floor(totalFleets / 3);
-  const oni = Math.floor((totalFleets - mud) / 2);
-  const ustur = Math.max(0, totalFleets - mud - oni);
-  return { MUD: mud, ONI: oni, USTUR: ustur };
+function resolveSageFleetFaction(value: unknown): BridgeFaction | null {
+  if (value === 1 || value === "1") return "MUD";
+  if (value === 2 || value === "2") return "ONI";
+  if (value === 3 || value === "3") return "USTUR";
+  return null;
 }
 
 async function readMiningDailyBaseline(utcDateKey: string) {
@@ -1464,6 +1464,50 @@ function extractSageDecodedAccount(account: unknown): {
   };
 }
 
+function extractSageFleetAccount(account: unknown): {
+  key: string;
+  data: {
+    gameId?: unknown;
+    faction?: unknown;
+  };
+  mineState: {
+    resource?: unknown;
+  } | null;
+} | null {
+  if (!isDecodedOkAccount(account)) {
+    return null;
+  }
+
+  const rawData = asRecord(account.data);
+  const data = asRecord(rawData?._data) || rawData;
+  const stateRecord = asRecord(rawData?._state);
+  const mineStateCandidate =
+    asRecord(stateRecord?._variant)?.MineAsteroid ||
+    asRecord(stateRecord?._variant)?.mineAsteroid ||
+    stateRecord?.MineAsteroid ||
+    stateRecord?.mineAsteroid ||
+    null;
+  const mineState = asRecord(mineStateCandidate);
+  const key = toBase58Like(rawData?._key) || toBase58Like(account.key);
+
+  if (!data || !key) {
+    return null;
+  }
+
+  return {
+    key,
+    data: {
+      gameId: data.gameId,
+      faction: data.faction,
+    },
+    mineState: mineState
+      ? {
+          resource: mineState.resource,
+        }
+      : null,
+  };
+}
+
 /**
  * Fetch mining data directly from SAGE on-chain accounts.
  * Falls back to RYDN-based aggregation if the Solana RPC path is unavailable.
@@ -1472,9 +1516,10 @@ async function fetchSageMiningMetrics(): Promise<BridgeMiningMetrics> {
   try {
     const connection = new Connection(SOLANA_RPC_URL, "confirmed");
     const program = buildSageReadOnlyProgram(connection);
-    const [mineItems, resources] = await Promise.all([
+    const [mineItems, resources, fleets] = await Promise.all([
       readAllFromRPC(connection, program, MineItem, "confirmed"),
       readAllFromRPC(connection, program, Resource, "confirmed"),
+      readAllFromRPC(connection, program, Fleet, "confirmed"),
     ]);
 
     const mineItemAccounts = mineItems
@@ -1482,6 +1527,9 @@ async function fetchSageMiningMetrics(): Promise<BridgeMiningMetrics> {
       .filter((account): account is NonNullable<typeof account> => !!account);
     const resourceAccounts = resources
       .map((account) => extractSageDecodedAccount(account))
+      .filter((account): account is NonNullable<typeof account> => !!account);
+    const fleetAccounts = fleets
+      .map((account) => extractSageFleetAccount(account))
       .filter((account): account is NonNullable<typeof account> => !!account);
 
     if (!resourceAccounts.length || !mineItemAccounts.length) {
@@ -1514,6 +1562,35 @@ async function fetchSageMiningMetrics(): Promise<BridgeMiningMetrics> {
           },
         ]),
     );
+
+    const resourceKeyToName = new Map(
+      resourceAccounts
+        .filter((resourceAccount) => toBase58Like(resourceAccount.data.gameId) === activeGameId)
+        .map((resourceAccount) => {
+          const mineItemKey = toBase58Like(resourceAccount.data.mineItem);
+          const mineItem = mineItemKey ? mineItemByKey.get(mineItemKey) : null;
+          return [resourceAccount.key, mineItem?.name || mineItemKey || resourceAccount.key] as const;
+        }),
+    );
+
+    const fleetCountsByResource = new Map<string, Record<BridgeFaction, number>>();
+    for (const fleetAccount of fleetAccounts) {
+      if (toBase58Like(fleetAccount.data.gameId) !== activeGameId || !fleetAccount.mineState) {
+        continue;
+      }
+
+      const resourceKey = toBase58Like(fleetAccount.mineState.resource);
+      const faction = resolveSageFleetFaction(fleetAccount.data.faction);
+      const resourceName = resourceKey ? resourceKeyToName.get(resourceKey) : null;
+
+      if (!resourceName || !faction) {
+        continue;
+      }
+
+      const current = fleetCountsByResource.get(resourceName) || { MUD: 0, ONI: 0, USTUR: 0 };
+      current[faction] += 1;
+      fleetCountsByResource.set(resourceName, current);
+    }
 
     const aggregatedResources = new Map<
       string,
@@ -1625,8 +1702,12 @@ async function fetchSageMiningMetrics(): Promise<BridgeMiningMetrics> {
 
         return {
           resource,
-          totalFleets: data.totalFleets,
-          byFaction: splitFleetsAcrossFactions(data.totalFleets),
+          totalFleets:
+            (fleetCountsByResource.get(resource)?.MUD || 0) +
+            (fleetCountsByResource.get(resource)?.ONI || 0) +
+            (fleetCountsByResource.get(resource)?.USTUR || 0) ||
+            data.totalFleets,
+          byFaction: fleetCountsByResource.get(resource) || { MUD: 0, ONI: 0, USTUR: 0 },
           updatedAt: now.toISOString(),
           totalMined: totalMined.toString(),
           dailyMined: dailyMined.toString(),
