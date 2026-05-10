@@ -41,12 +41,42 @@ const SOLANA_RPC_URL =
   process.env.SOLANA_RPC_URL || "https://api.mainnet-beta.solana.com";
 
 const PLATFORM_FEE_WALLET =
-  process.env.PLATFORM_FEE_WALLET || "YQmg9nTsvVLUgtj35pY8WUPRVGHaz7KfmaCgPuS6bwY";
+  process.env.PLATFORM_FEE_WALLET || "7BNFxaeXA2DPLRnYeRLEMqA5gAWgMGdG3tcJBFrbzH5v";
 const PLATFORM_FEE_BPS = 100; // 1% = 100 basis points
 const USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
-const SPL_TOKEN_PROGRAM = new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA");
-const ATA_PROGRAM = new PublicKey("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJe1Y");
-const SYSTEM_PROGRAM = new PublicKey("11111111111111111111111111111111");
+
+function safeProgramPublicKey(value: string, fallbackBytes: number[], label: string) {
+  try {
+    return new PublicKey(value.trim());
+  } catch {
+    app.log.warn(
+      { label },
+      "Invalid public key input for program id, using byte fallback",
+    );
+    return new PublicKey(Uint8Array.from(fallbackBytes));
+  }
+}
+
+const SPL_TOKEN_PROGRAM = safeProgramPublicKey(
+  "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+  [6, 221, 246, 225, 215, 101, 161, 147, 217, 203, 225, 70, 206, 235, 121, 172, 28, 180, 133, 237, 95, 91, 55, 145, 58, 140, 245, 133, 126, 255, 0, 169],
+  "SPL_TOKEN_PROGRAM",
+);
+const ATA_PROGRAM = safeProgramPublicKey(
+  "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL",
+  [140, 151, 37, 143, 78, 36, 137, 241, 187, 61, 16, 41, 20, 142, 13, 131, 11, 90, 19, 153, 218, 255, 16, 132, 4, 142, 123, 216, 219, 233, 248, 89],
+  "ATA_PROGRAM",
+);
+const SYSTEM_PROGRAM = safeProgramPublicKey(
+  "11111111111111111111111111111111",
+  [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+  "SYSTEM_PROGRAM",
+);
+const SYSVAR_RENT_PROGRAM = safeProgramPublicKey(
+  "SysvarRent111111111111111111111111111111111",
+  [6, 167, 213, 23, 25, 44, 92, 81, 33, 140, 201, 76, 61, 74, 241, 127, 88, 218, 238, 8, 155, 161, 253, 68, 227, 219, 217, 138, 0, 0, 0, 0],
+  "SYSVAR_RENT_PROGRAM",
+);
 
 function parseEscrowSecretKey(secret?: string) {
   if (!secret) return null;
@@ -73,7 +103,7 @@ const MARKET_ESCROW_KEYPAIR = parseEscrowSecretKey(process.env.MARKET_ESCROW_SEC
 const MARKET_ESCROW_WALLET =
   MARKET_ESCROW_KEYPAIR?.publicKey.toBase58() ||
   process.env.MARKET_ESCROW_WALLET ||
-  PLATFORM_FEE_WALLET;
+  "YQmg9nTsvVLUgtj35pY8WUPRVGHaz7KfmaCgPuS6bwY";
 
 function getAta(mint: PublicKey, owner: PublicKey): PublicKey {
   return PublicKey.findProgramAddressSync(
@@ -120,6 +150,7 @@ function createAtaIdempotentInstruction(
       { pubkey: mint, isSigner: false, isWritable: false },
       { pubkey: SYSTEM_PROGRAM, isSigner: false, isWritable: false },
       { pubkey: SPL_TOKEN_PROGRAM, isSigner: false, isWritable: false },
+      { pubkey: SYSVAR_RENT_PROGRAM, isSigner: false, isWritable: false },
     ],
     programId: ATA_PROGRAM,
     data: Buffer.from([1]),
@@ -430,6 +461,52 @@ type BridgeAuditEvent = {
   createdAt: string;
 };
 
+type BridgeMapPoint = {
+  id: string;
+  label: string;
+  x: number;
+  y: number;
+  strength?: number;
+  updatedAt?: string;
+};
+
+type BridgeMapRoute = {
+  id: string;
+  points: string;
+  etaMinutes?: number;
+  updatedAt?: string;
+};
+
+type BridgeMapRiskZone = {
+  id: string;
+  x: number;
+  y: number;
+  r: number;
+  severity: "critical" | "high" | "normal";
+  updatedAt?: string;
+};
+
+type BridgeLiveMap = {
+  generatedAt: string;
+  source: "upstream" | "data-intel" | "synthetic";
+  role: BridgeRole;
+  profile: BridgeC4Profile;
+  mapImageUrl: string;
+  refreshMs: number;
+  activityScore: number;
+  fleets: BridgeMapPoint[];
+  enemies: BridgeMapPoint[];
+  resources: BridgeMapPoint[];
+  routes: BridgeMapRoute[];
+  riskZones: BridgeMapRiskZone[];
+};
+
+type BridgeAccessEntry = {
+  wallet: string;
+  grantedAt: string;
+  grantedBy: string;
+};
+
 type WalletAuthUser = {
   id: string;
   wallet: string;
@@ -457,6 +534,15 @@ type WalletAuthSession = {
 
 const BRIDGE_DEFAULT_ROLE: BridgeRole = "Captain";
 const BRIDGE_DEFAULT_PROFILE: BridgeC4Profile = "c4-transition";
+const BRIDGE_MAP_IMAGE_URL =
+  process.env.BRIDGE_MAP_IMAGE_URL || "https://cdn.staratlas.com/sage-labs/map-hires-dark.jpg";
+const BRIDGE_LIVE_MAP_UPSTREAM_URL = (process.env.BRIDGE_LIVE_MAP_UPSTREAM_URL || "").trim();
+const BRIDGE_DATA_INTEL_BASE_URL =
+  (process.env.BRIDGE_DATA_INTEL_BASE_URL || "https://data-intel-prod.uc.r.appspot.com").trim();
+const BRIDGE_LIVE_MAP_TIMEOUT_MS = parseDurationMs(
+  process.env.BRIDGE_LIVE_MAP_TIMEOUT_MS,
+  7_500,
+);
 const BRIDGE_PROFILES: Record<BridgeC4Profile, BridgeProfileRules> = {
   "pre-c4": {
     label: "Pre-C4 Baseline",
@@ -704,6 +790,420 @@ function runBridgePreflight(params: {
   };
 }
 
+function hashString(value: string) {
+  let hash = 2166136261;
+  for (let i = 0; i < value.length; i += 1) {
+    hash ^= value.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return Math.abs(hash >>> 0);
+}
+
+function hashedRange(seed: string, min: number, max: number) {
+  const hash = hashString(seed);
+  const ratio = (hash % 10_000) / 10_000;
+  return Math.round(min + (max - min) * ratio);
+}
+
+function buildBridgeUpstreamSamplePayload(params: {
+  role: BridgeRole;
+  profile: BridgeC4Profile;
+  wallet: string;
+  windowMinutes: number;
+}): BridgeLiveMap {
+  const nowIso = new Date().toISOString();
+
+  const fleets: BridgeMapPoint[] = [
+    {
+      id: `up-fleet-${hashString(`${params.wallet}:1`)}`,
+      label: "EV Vanguard",
+      x: hashedRange(`${params.wallet}:fleet:x:1`, 140, 860),
+      y: hashedRange(`${params.wallet}:fleet:y:1`, 90, 390),
+      strength: 72,
+      updatedAt: nowIso,
+    },
+    {
+      id: `up-fleet-${hashString(`${params.wallet}:2`)}`,
+      label: "EV Sentinel",
+      x: hashedRange(`${params.wallet}:fleet:x:2`, 140, 860),
+      y: hashedRange(`${params.wallet}:fleet:y:2`, 90, 390),
+      strength: 64,
+      updatedAt: nowIso,
+    },
+  ];
+
+  const enemies: BridgeMapPoint[] = [
+    {
+      id: `up-enemy-${hashString(`${params.role}:1`)}`,
+      label: "Hostile Wing",
+      x: hashedRange(`${params.role}:enemy:x:1`, 520, 940),
+      y: hashedRange(`${params.role}:enemy:y:1`, 80, 360),
+      strength: 88,
+      updatedAt: nowIso,
+    },
+  ];
+
+  const resources: BridgeMapPoint[] = [
+    {
+      id: `up-resource-${hashString(`${params.profile}:1`)}`,
+      label: "Fuel Lane",
+      x: hashedRange(`${params.profile}:res:x:1`, 120, 880),
+      y: hashedRange(`${params.profile}:res:y:1`, 120, 420),
+      strength: 58,
+      updatedAt: nowIso,
+    },
+    {
+      id: `up-resource-${hashString(`${params.profile}:2`)}`,
+      label: "Ore Cluster",
+      x: hashedRange(`${params.profile}:res:x:2`, 120, 880),
+      y: hashedRange(`${params.profile}:res:y:2`, 120, 420),
+      strength: 66,
+      updatedAt: nowIso,
+    },
+  ];
+
+  const routes: BridgeMapRoute[] = [
+    {
+      id: `up-route-${hashString(`${params.wallet}:route`)}`,
+      points: `${fleets[0].x},${fleets[0].y} ${Math.round((fleets[0].x + resources[0].x) / 2)},${Math.round((fleets[0].y + resources[0].y) / 2)} ${resources[0].x},${resources[0].y}`,
+      etaMinutes: clamp(params.windowMinutes, 15, 240),
+      updatedAt: nowIso,
+    },
+  ];
+
+  const riskZones: BridgeMapRiskZone[] = [
+    {
+      id: `up-risk-${hashString(`${params.role}:critical`)}`,
+      x: enemies[0].x,
+      y: enemies[0].y,
+      r: 96,
+      severity: "critical",
+      updatedAt: nowIso,
+    },
+  ];
+
+  return {
+    generatedAt: nowIso,
+    source: "upstream",
+    role: params.role,
+    profile: params.profile,
+    mapImageUrl: BRIDGE_MAP_IMAGE_URL,
+    refreshMs: 10_000,
+    activityScore: 73,
+    fleets,
+    enemies,
+    resources,
+    routes,
+    riskZones,
+  };
+}
+
+type DataIntelOrderSignal = {
+  id: string;
+  label: string;
+  status: string;
+  valueUsd: number;
+  createdAt?: string;
+};
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  return value as Record<string, unknown>;
+}
+
+function extractOrderSignals(payload: unknown): DataIntelOrderSignal[] {
+  const list: unknown[] = Array.isArray(payload)
+    ? payload
+    : Object.values(asRecord(payload) || {}).filter((value) => typeof value === "object");
+
+  const signals = list
+    .map((raw, index) => {
+      const record = asRecord(raw);
+      if (!record) return null;
+
+      const id = String(
+        record.id ||
+          record.orderId ||
+          record.signature ||
+          record.txSignature ||
+          `order-${index + 1}`,
+      );
+      const label = String(
+        record.itemName ||
+          record.asset ||
+          record.market ||
+          record.symbol ||
+          record.side ||
+          "Order",
+      );
+      const status = String(record.status || record.state || "active").toLowerCase();
+      const valueUsd = Number(
+        record.priceUsd || record.totalUsd || record.valueUsd || record.price || record.value || 0,
+      );
+      const createdAt =
+        typeof record.createdAt === "string"
+          ? record.createdAt
+          : typeof record.updatedAt === "string"
+            ? record.updatedAt
+            : typeof record.timestamp === "string"
+              ? record.timestamp
+              : undefined;
+
+      return {
+        id,
+        label,
+        status,
+        valueUsd: Number.isFinite(valueUsd) ? valueUsd : 0,
+        createdAt,
+      };
+    })
+    .filter(Boolean) as DataIntelOrderSignal[];
+
+  return signals.slice(0, 40);
+}
+
+async function fetchJsonWithTimeout(url: string, timeoutMs: number) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, {
+      signal: controller.signal,
+      headers: {
+        "User-Agent": "StarAtlasBridgeLiveMap/1.0",
+      },
+    });
+
+    if (!response.ok) {
+      return null;
+    }
+
+    return (await response.json()) as unknown;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function fetchUpstreamLiveMap(params: {
+  role: BridgeRole;
+  profile: BridgeC4Profile;
+  wallet: string;
+  windowMinutes: number;
+}) {
+  if (!BRIDGE_LIVE_MAP_UPSTREAM_URL) {
+    return null;
+  }
+
+  const separator = BRIDGE_LIVE_MAP_UPSTREAM_URL.includes("?") ? "&" : "?";
+  const url =
+    `${BRIDGE_LIVE_MAP_UPSTREAM_URL}${separator}` +
+    `role=${encodeURIComponent(params.role)}` +
+    `&profile=${encodeURIComponent(params.profile)}` +
+    `&wallet=${encodeURIComponent(params.wallet)}` +
+    `&windowMinutes=${params.windowMinutes}`;
+
+  const payload = await fetchJsonWithTimeout(url, BRIDGE_LIVE_MAP_TIMEOUT_MS);
+  const record = asRecord(payload);
+  if (!record) {
+    return null;
+  }
+
+  const fleets = Array.isArray(record.fleets) ? (record.fleets as BridgeMapPoint[]) : [];
+  const enemies = Array.isArray(record.enemies) ? (record.enemies as BridgeMapPoint[]) : [];
+  const resources = Array.isArray(record.resources) ? (record.resources as BridgeMapPoint[]) : [];
+  const routes = Array.isArray(record.routes) ? (record.routes as BridgeMapRoute[]) : [];
+  const riskZones = Array.isArray(record.riskZones)
+    ? (record.riskZones as BridgeMapRiskZone[])
+    : [];
+
+  if (!fleets.length && !enemies.length && !resources.length) {
+    return null;
+  }
+
+  return {
+    generatedAt:
+      typeof record.generatedAt === "string" ? record.generatedAt : new Date().toISOString(),
+    source: "upstream" as const,
+    role: params.role,
+    profile: params.profile,
+    mapImageUrl:
+      typeof record.mapImageUrl === "string" && record.mapImageUrl
+        ? record.mapImageUrl
+        : BRIDGE_MAP_IMAGE_URL,
+    refreshMs: clamp(Number(record.refreshMs || 10_000), 2_500, 60_000),
+    activityScore: clamp(Number(record.activityScore || 55), 1, 100),
+    fleets,
+    enemies,
+    resources,
+    routes,
+    riskZones,
+  } satisfies BridgeLiveMap;
+}
+
+async function fetchDataIntelOrderSignals(wallet: string) {
+  if (!isValidSolanaWallet(wallet) || !BRIDGE_DATA_INTEL_BASE_URL) {
+    return [] as DataIntelOrderSignal[];
+  }
+
+  const [v2Payload, localPayload] = await Promise.all([
+    fetchJsonWithTimeout(
+      `${BRIDGE_DATA_INTEL_BASE_URL}/orders/v2/${encodeURIComponent(wallet)}`,
+      BRIDGE_LIVE_MAP_TIMEOUT_MS,
+    ),
+    fetchJsonWithTimeout(
+      `${BRIDGE_DATA_INTEL_BASE_URL}/orders/local/${encodeURIComponent(wallet)}`,
+      BRIDGE_LIVE_MAP_TIMEOUT_MS,
+    ),
+  ]);
+
+  const signals = [...extractOrderSignals(v2Payload), ...extractOrderSignals(localPayload)];
+  const unique = Array.from(new Map(signals.map((signal) => [signal.id, signal])).values());
+  return unique.slice(0, 40);
+}
+
+async function buildBridgeLiveMap(params: {
+  role: BridgeRole;
+  profile: BridgeC4Profile;
+  wallet: string;
+  windowMinutes: number;
+}): Promise<BridgeLiveMap> {
+  const upstream = await fetchUpstreamLiveMap(params);
+  if (upstream) {
+    return upstream;
+  }
+
+  const dataIntelSignals = await fetchDataIntelOrderSignals(params.wallet);
+  const now = Date.now();
+  const nowIso = new Date(now).toISOString();
+  const windowMs = params.windowMinutes * 60 * 1000;
+  const sinceMs = now - windowMs;
+
+  const scopedAlerts = bridgeAlertsStore
+    .filter((alert) => alert.targetRoles.includes(params.role))
+    .filter((alert) => new Date(alert.createdAt).getTime() >= sinceMs)
+    .slice(0, 12);
+
+  const preflights = bridgeAuditStore
+    .filter((event) => event.role === params.role && event.eventType === "preflight-run")
+    .filter((event) => new Date(event.createdAt).getTime() >= sinceMs)
+    .slice(0, 10);
+
+  const activeListings = marketListings.filter((listing) => listing.status === "active").slice(0, 12);
+  const dataIntelRecent = dataIntelSignals.filter((signal) => {
+    if (!signal.createdAt) return true;
+    const ts = new Date(signal.createdAt).getTime();
+    return Number.isFinite(ts) ? ts >= sinceMs : true;
+  });
+
+  const fleets: BridgeMapPoint[] = preflights.length
+    ? preflights.map((event, index) => ({
+        id: `fleet-${event.id}`,
+        label: `EV-${String(index + 1).padStart(2, "0")}`,
+        x: hashedRange(`${event.id}:x`, 120, 900),
+        y: hashedRange(`${event.id}:y`, 90, 420),
+        strength: clamp(Number(event.details.successProbability || 60), 15, 95),
+        updatedAt: event.createdAt,
+      }))
+    : [
+        { id: "fleet-default-a", label: "EV Alpha", x: 180, y: 150, strength: 62, updatedAt: nowIso },
+        { id: "fleet-default-b", label: "EV Cargo", x: 360, y: 220, strength: 57, updatedAt: nowIso },
+        { id: "fleet-default-c", label: "EV Scout", x: 690, y: 170, strength: 68, updatedAt: nowIso },
+      ];
+
+  const enemies: BridgeMapPoint[] = scopedAlerts
+    .filter((alert) => alert.level === "critical" || alert.level === "high")
+    .map((alert, index) => ({
+      id: `enemy-${alert.id}`,
+      label: alert.level === "critical" ? `Raid-${index + 1}` : `Threat-${index + 1}`,
+      x: hashedRange(`${alert.id}:x`, 500, 940),
+      y: hashedRange(`${alert.id}:y`, 70, 410),
+      strength: alert.level === "critical" ? 92 : 74,
+      updatedAt: alert.createdAt,
+    }));
+
+  const resources: BridgeMapPoint[] = dataIntelRecent.length
+    ? dataIntelRecent.map((signal) => ({
+        id: `resource-${signal.id}`,
+        label: signal.label.slice(0, 18),
+        x: hashedRange(`${signal.id}:x`, 130, 930),
+        y: hashedRange(`${signal.id}:y`, 80, 430),
+        strength: clamp(Math.round(signal.valueUsd / 20), 10, 95),
+        updatedAt: signal.createdAt,
+      }))
+    : activeListings.map((listing) => ({
+        id: `resource-${listing.id}`,
+        label: listing.itemName.slice(0, 18),
+        x: hashedRange(`${listing.id}:x`, 130, 930),
+        y: hashedRange(`${listing.id}:y`, 80, 430),
+        strength: clamp(Math.round(listing.priceUsd / 10), 10, 95),
+        updatedAt: listing.createdAt,
+      }));
+
+  const routes: BridgeMapRoute[] = fleets.slice(0, Math.max(0, fleets.length - 1)).map((fleet, index) => {
+    const target = fleets[index + 1];
+    const controlX = Math.round((fleet.x + target.x) / 2);
+    const controlY = Math.round((fleet.y + target.y) / 2 + (index % 2 === 0 ? -24 : 24));
+    return {
+      id: `route-${fleet.id}-${target.id}`,
+      points: `${fleet.x},${fleet.y} ${controlX},${controlY} ${target.x},${target.y}`,
+      etaMinutes: clamp(Math.round(Math.abs(target.x - fleet.x) / 4 + Math.abs(target.y - fleet.y) / 6), 25, 320),
+      updatedAt: [fleet.updatedAt, target.updatedAt].filter(Boolean).sort().reverse()[0],
+    };
+  });
+
+  const riskZones: BridgeMapRiskZone[] = [
+    ...enemies.slice(0, 4).map((enemy) => ({
+      id: `zone-${enemy.id}`,
+      x: enemy.x,
+      y: enemy.y,
+      r: clamp(Math.round((enemy.strength || 70) * 1.1), 55, 140),
+      severity: ((enemy.strength || 0) >= 90 ? "critical" : "high") as
+        | "critical"
+        | "high"
+        | "normal",
+      updatedAt: enemy.updatedAt,
+    })),
+    ...resources.slice(0, 2).map((resource) => ({
+      id: `zone-${resource.id}`,
+      x: resource.x,
+      y: resource.y,
+      r: 58,
+      severity: "normal" as const,
+      updatedAt: resource.updatedAt,
+    })),
+  ];
+
+  const activityScore = clamp(
+    Math.round(
+      fleets.length * 8 +
+        enemies.length * 12 +
+        resources.length * 5 +
+        routes.length * 4 +
+        dataIntelRecent.length * 2,
+    ),
+    5,
+    100,
+  );
+
+  return {
+    generatedAt: nowIso,
+    source: dataIntelRecent.length ? "data-intel" : "synthetic",
+    role: params.role,
+    profile: params.profile,
+    mapImageUrl: BRIDGE_MAP_IMAGE_URL,
+    refreshMs: 10_000,
+    activityScore,
+    fleets,
+    enemies,
+    resources,
+    routes,
+    riskZones,
+  };
+}
+
 const marketListings: MarketListing[] = [
   {
     id: "lst-1001",
@@ -779,6 +1279,10 @@ function normalizeWalletAddress(wallet: string) {
 
 function isAdminWallet(wallet: string) {
   return WALLET_AUTH_ADMIN_WALLETS.has(wallet);
+}
+
+function hasBridgeAccess(wallet: string) {
+  return isAdminWallet(wallet) || bridgeAccessStore.some((entry) => entry.wallet === wallet);
 }
 
 function isValidSolanaWallet(wallet: string) {
@@ -912,6 +1416,20 @@ function requireWalletAuthSession(request: FastifyRequest, reply: FastifyReply) 
   if (!session || new Date(session.expiresAt).getTime() <= Date.now()) {
     walletAuthSessionStore.delete(token);
     reply.code(401).send({ error: "Session expired or invalid" });
+    return null;
+  }
+
+  return session;
+}
+
+function requireBridgeAccessSession(request: FastifyRequest, reply: FastifyReply) {
+  const session = requireWalletAuthSession(request, reply);
+  if (!session) {
+    return null;
+  }
+
+  if (!hasBridgeAccess(session.wallet)) {
+    reply.code(403).send({ error: "Captain's Bridge access required" });
     return null;
   }
 
@@ -1377,6 +1895,7 @@ const STAR_ATLAS_ARCHIVE_WEEKLY_DAYS = Number(
 );
 const NEWS_ARCHIVE_FILE = resolve(API_ROOT_DIR, "data", "news-archive.json");
 const BRIDGE_AUDIT_FILE = resolve(API_ROOT_DIR, "data", "bridge-audit-log.json");
+const BRIDGE_ACCESS_FILE = resolve(API_ROOT_DIR, "data", "bridge-access.json");
 const WALLET_AUTH_USERS_FILE = resolve(API_ROOT_DIR, "data", "wallet-auth-users.json");
 const DEFAULT_WALLET_AUTH_ADMIN_WALLETS = [
   "YQmg9nTsvVLUgtj35pY8WUPRVGHaz7KfmaCgPuS6bwY",
@@ -1425,6 +1944,7 @@ type CacheEntry<T> = {
 const intelOverviewCache = new Map<number, CacheEntry<IntelOverview>>();
 const newsArchiveCache = new Map<number, CacheEntry<NewsArchiveResponse>>();
 let bridgeAuditStore: BridgeAuditEvent[] = [];
+let bridgeAccessStore: BridgeAccessEntry[] = [];
 let walletAuthUsersStore: WalletAuthUser[] = [];
 const walletAuthChallengeStore = new Map<string, WalletAuthChallenge>();
 const walletAuthSessionStore = new Map<string, WalletAuthSession>();
@@ -2064,6 +2584,54 @@ async function readBridgeAuditEvents() {
   }
 }
 
+async function readBridgeAccessEntries() {
+  try {
+    const raw = await readFile(BRIDGE_ACCESS_FILE, "utf-8");
+    const parsed = JSON.parse(raw) as { entries?: BridgeAccessEntry[] };
+    if (Array.isArray(parsed.entries)) {
+      return parsed.entries
+        .map((entry) => ({
+          wallet: String(entry.wallet || "").trim(),
+          grantedAt: String(entry.grantedAt || ""),
+          grantedBy: String(entry.grantedBy || "").trim(),
+        }))
+        .filter((entry) => entry.wallet && isValidSolanaWallet(entry.wallet));
+    }
+    return [] as BridgeAccessEntry[];
+  } catch {
+    return [] as BridgeAccessEntry[];
+  }
+}
+
+async function writeBridgeAccessEntries(entries: BridgeAccessEntry[]) {
+  await mkdir(dirname(BRIDGE_ACCESS_FILE), { recursive: true });
+  await writeFile(
+    BRIDGE_ACCESS_FILE,
+    JSON.stringify({ entries }, null, 2),
+    "utf-8",
+  );
+}
+
+async function ensureBridgeAccessSeed() {
+  const now = new Date().toISOString();
+  let changed = false;
+
+  for (const adminWallet of WALLET_AUTH_ADMIN_WALLETS) {
+    if (!bridgeAccessStore.some((entry) => entry.wallet === adminWallet)) {
+      bridgeAccessStore.push({
+        wallet: adminWallet,
+        grantedAt: now,
+        grantedBy: adminWallet,
+      });
+      changed = true;
+    }
+  }
+
+  if (changed) {
+    await writeBridgeAccessEntries(bridgeAccessStore);
+  }
+}
+
 async function writeBridgeAuditEvents(events: BridgeAuditEvent[]) {
   await mkdir(dirname(BRIDGE_AUDIT_FILE), { recursive: true });
   await writeFile(
@@ -2579,8 +3147,32 @@ app.get("/", async () => {
       walletDashboardExample:
         "/api/dashboard/wallet/So11111111111111111111111111111111111111112",
       intelOverview: "/api/intel/overview",
+      bridgeLiveMap: "/api/bridge/live-map",
+      bridgeUpstreamSample: "/api/bridge/upstream-sample",
     },
   };
+});
+
+app.get<{
+  Querystring: {
+    role?: string;
+    profile?: string;
+    wallet?: string;
+    windowMinutes?: number;
+  };
+}>("/api/bridge/upstream-sample", async (request, reply) => {
+  const role = resolveBridgeRole(request.query.role);
+  const profile = resolveBridgeProfile(request.query.profile);
+  const wallet = normalizeWalletAddress(request.query.wallet || "So11111111111111111111111111111111111111112");
+  const windowMinutes = clamp(Number(request.query.windowMinutes || 90), 5, 360);
+
+  reply.header("cache-control", "no-store");
+  return buildBridgeUpstreamSamplePayload({
+    role,
+    profile,
+    wallet,
+    windowMinutes,
+  });
 });
 
 app.get(
@@ -3246,7 +3838,10 @@ app.get<{
     role?: string;
     profile?: string;
   };
-}>("/api/bridge/config", async (request) => {
+}>("/api/bridge/config", async (request, reply) => {
+  const session = requireBridgeAccessSession(request, reply);
+  if (!session) return;
+
   const role = resolveBridgeRole(request.query.role);
   const profile = resolveBridgeProfile(request.query.profile);
 
@@ -3265,7 +3860,133 @@ app.get<{
   };
 });
 
-app.get<{ Params: { role: string } }>("/api/bridge/capabilities/:role", async (request) => {
+app.get<{
+  Querystring: {
+    role?: string;
+    profile?: string;
+    windowMinutes?: number;
+  };
+}>("/api/bridge/live-map", async (request, reply) => {
+  const session = requireBridgeAccessSession(request, reply);
+  if (!session) return;
+
+  const role = resolveBridgeRole(request.query.role);
+  const profile = resolveBridgeProfile(request.query.profile);
+  const windowMinutes = clamp(Number(request.query.windowMinutes || 90), 5, 360);
+
+  const payload = await buildBridgeLiveMap({
+    wallet: session.wallet,
+    role,
+    profile,
+    windowMinutes,
+  });
+
+  reply.header("cache-control", "no-store");
+  reply.header("x-map-sync", "live");
+  return payload;
+});
+
+app.get("/api/bridge/access/me", async (request, reply) => {
+  const session = requireWalletAuthSession(request, reply);
+  if (!session) return;
+
+  return {
+    success: true,
+    wallet: session.wallet,
+    isAdmin: isAdminWallet(session.wallet),
+    hasBridgeAccess: hasBridgeAccess(session.wallet),
+  };
+});
+
+app.get("/api/bridge/admin/access-list", async (request, reply) => {
+  const session = requireWalletAuthSession(request, reply);
+  if (!session) return;
+
+  if (!isAdminWallet(session.wallet)) {
+    return reply.code(403).send({ error: "Admin access required" });
+  }
+
+  const entries = [...bridgeAccessStore].sort((left, right) =>
+    right.grantedAt.localeCompare(left.grantedAt),
+  );
+
+  return {
+    success: true,
+    entries,
+  };
+});
+
+app.post<{ Body: { wallet?: string } }>("/api/bridge/admin/access-list", async (request, reply) => {
+  const session = requireWalletAuthSession(request, reply);
+  if (!session) return;
+
+  if (!isAdminWallet(session.wallet)) {
+    return reply.code(403).send({ error: "Admin access required" });
+  }
+
+  const wallet = normalizeWalletAddress(request.body?.wallet || "");
+  if (!wallet || !isValidSolanaWallet(wallet)) {
+    return reply.code(400).send({ error: "Valid Solana wallet is required" });
+  }
+
+  if (bridgeAccessStore.some((entry) => entry.wallet === wallet)) {
+    return {
+      success: true,
+      alreadyExists: true,
+      wallet,
+    };
+  }
+
+  bridgeAccessStore = [
+    {
+      wallet,
+      grantedAt: new Date().toISOString(),
+      grantedBy: session.wallet,
+    },
+    ...bridgeAccessStore,
+  ];
+  await writeBridgeAccessEntries(bridgeAccessStore);
+
+  return {
+    success: true,
+    wallet,
+  };
+});
+
+app.delete<{ Params: { wallet: string } }>("/api/bridge/admin/access-list/:wallet", async (request, reply) => {
+  const session = requireWalletAuthSession(request, reply);
+  if (!session) return;
+
+  if (!isAdminWallet(session.wallet)) {
+    return reply.code(403).send({ error: "Admin access required" });
+  }
+
+  const wallet = normalizeWalletAddress(request.params.wallet || "");
+  if (!wallet || !isValidSolanaWallet(wallet)) {
+    return reply.code(400).send({ error: "Valid Solana wallet is required" });
+  }
+
+  if (isAdminWallet(wallet)) {
+    return reply.code(400).send({ error: "Cannot revoke admin wallet access" });
+  }
+
+  const before = bridgeAccessStore.length;
+  bridgeAccessStore = bridgeAccessStore.filter((entry) => entry.wallet !== wallet);
+  if (bridgeAccessStore.length === before) {
+    return reply.code(404).send({ error: "Wallet is not in access list" });
+  }
+
+  await writeBridgeAccessEntries(bridgeAccessStore);
+  return {
+    success: true,
+    wallet,
+  };
+});
+
+app.get<{ Params: { role: string } }>("/api/bridge/capabilities/:role", async (request, reply) => {
+  const session = requireBridgeAccessSession(request, reply);
+  if (!session) return;
+
   const role = resolveBridgeRole(request.params.role);
   return {
     role,
@@ -3279,7 +4000,10 @@ app.get<{
     level?: BridgeAlertLevel | "all";
     limit?: number;
   };
-}>("/api/bridge/alerts", async (request) => {
+}>("/api/bridge/alerts", async (request, reply) => {
+  const session = requireBridgeAccessSession(request, reply);
+  if (!session) return;
+
   const role = resolveBridgeRole(request.query.role);
   const level = request.query.level || "all";
   const limit = clamp(Number(request.query.limit || 20), 1, 100);
@@ -3306,7 +4030,10 @@ app.get<{
     role?: string;
     limit?: number;
   };
-}>("/api/bridge/audit", async (request) => {
+}>("/api/bridge/audit", async (request, reply) => {
+  const session = requireBridgeAccessSession(request, reply);
+  if (!session) return;
+
   const role = resolveBridgeRole(request.query.role);
   const limit = clamp(Number(request.query.limit || 20), 1, 100);
 
@@ -3330,6 +4057,9 @@ app.post<{
     actorWallet?: string;
   };
 }>("/api/bridge/alerts/:id/ack", async (request, reply) => {
+  const session = requireBridgeAccessSession(request, reply);
+  if (!session) return;
+
   const role = resolveBridgeRole(request.body?.role);
   const profile = resolveBridgeProfile(request.body?.profile);
   const alert = bridgeAlertsStore.find((item) => item.id === request.params.id);
@@ -3382,6 +4112,9 @@ app.post<{
     riskTolerance?: BridgeRiskTolerance;
   };
 }>("/api/bridge/preflight", async (request, reply) => {
+  const session = requireBridgeAccessSession(request, reply);
+  if (!session) return;
+
   const role = resolveBridgeRole(request.body?.role);
   const profile = resolveBridgeProfile(request.body?.profile);
   const operationType = request.body?.operationType;
@@ -3689,6 +4422,52 @@ app.get("/api/bridge/admin/wallet-nfts", async (request, reply) => {
 });
 
 const start = async () => {
+  app.get("/api/solana/latest-blockhash", async (_request, reply) => {
+    try {
+      const connection = new Connection(SOLANA_RPC_URL, "confirmed");
+      const latest = await connection.getLatestBlockhash("confirmed");
+      return latest;
+    } catch (error) {
+      return reply.code(502).send({
+        error: error instanceof Error ? error.message : "Failed to fetch blockhash",
+      });
+    }
+  });
+
+  app.post<{
+    Body: {
+      rawTxBase64?: string;
+      waitForConfirmation?: boolean;
+    };
+  }>("/api/solana/send-raw", async (request, reply) => {
+    const rawTxBase64 = String(request.body?.rawTxBase64 || "").trim();
+    const waitForConfirmation = request.body?.waitForConfirmation !== false;
+
+    if (!rawTxBase64) {
+      return reply.code(400).send({ error: "rawTxBase64 is required" });
+    }
+
+    try {
+      const connection = new Connection(SOLANA_RPC_URL, "confirmed");
+      const raw = Buffer.from(rawTxBase64, "base64");
+      const signature = await connection.sendRawTransaction(raw, { skipPreflight: false });
+
+      if (waitForConfirmation) {
+        await connection.confirmTransaction(signature, "confirmed");
+      }
+
+      return {
+        success: true,
+        signature,
+        confirmed: waitForConfirmation,
+      };
+    } catch (error) {
+      return reply.code(502).send({
+        error: error instanceof Error ? error.message : "Failed to send raw transaction",
+      });
+    }
+  });
+
   app.get("/api/market/config", async () => {
     return {
       platformFeeWallet: PLATFORM_FEE_WALLET,
@@ -3758,6 +4537,8 @@ const start = async () => {
 
   try {
     bridgeAuditStore = await readBridgeAuditEvents();
+    bridgeAccessStore = await readBridgeAccessEntries();
+    await ensureBridgeAccessSeed();
     walletAuthUsersStore = await readWalletAuthUsers();
     await app.listen({ port: PORT, host: HOST });
     app.log.info(`Star Atlas API started at http://${HOST}:${PORT}`);
