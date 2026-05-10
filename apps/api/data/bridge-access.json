@@ -1,0 +1,19 @@
+{
+  "entries": [
+    {
+      "wallet": "EGmPqfyMb9intZ1PzKWDmV1FQyR1SThT7An4bDQ9qcC7",
+      "grantedAt": "2026-05-10T13:28:54.648Z",
+      "grantedBy": "YQmg9nTsvVLUgtj35pY8WUPRVGHaz7KfmaCgPuS6bwY"
+    },
+    {
+      "wallet": "7BNFxaeXA2DPLRnYeRLEMqA5gAWgMGdG3tcJBFrbzH5v",
+      "grantedAt": "2026-05-10T12:17:18.018Z",
+      "grantedBy": "YQmg9nTsvVLUgtj35pY8WUPRVGHaz7KfmaCgPuS6bwY"
+    },
+    {
+      "wallet": "YQmg9nTsvVLUgtj35pY8WUPRVGHaz7KfmaCgPuS6bwY",
+      "grantedAt": "2026-05-10T12:06:53.739Z",
+      "grantedBy": "YQmg9nTsvVLUgtj35pY8WUPRVGHaz7KfmaCgPuS6bwY"
+    }
+  ]
+}
