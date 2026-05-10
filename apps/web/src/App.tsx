@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
 import type { FormEvent } from "react";
-import { useWallet } from "@solana/wallet-adapter-react";
+import { useConnection, useWallet } from "@solana/wallet-adapter-react";
 import { WalletMultiButton } from "@solana/wallet-adapter-react-ui";
-import { apiRequest } from "./apiClient";
+import { PublicKey, Transaction, TransactionInstruction } from "@solana/web3.js";
+import { ApiRequestError, apiRequest } from "./apiClient";
 import "./App.css";
 
 type FleetAsset = {
@@ -108,6 +109,153 @@ type NewsArchiveResponse = {
   entries: NewsArchiveEntry[];
 };
 
+type BridgeRole =
+  | "Fleet Admiral"
+  | "Admiral"
+  | "Captain"
+  | "Chief Specialist"
+  | "Logistics Officer"
+  | "Data Analyst"
+  | "Market Trader"
+  | "Threat Scout"
+  | "Ensign"
+  | "Allied Observer";
+
+type BridgeC4Profile = "pre-c4" | "c4-transition" | "c4-live";
+type BridgeOperationType =
+  | "fleet-dispatch"
+  | "logistics-route"
+  | "recon"
+  | "market-order"
+  | "repair";
+type BridgeRiskTolerance = "low" | "medium" | "high";
+type BridgeAlertLevel = "critical" | "high" | "normal" | "info";
+
+type BridgeCapabilities = {
+  canApproveCritical: boolean;
+  canRunOperations: boolean;
+  visiblePresets: string[];
+  notifications: BridgeAlertLevel[];
+};
+
+type BridgeConfig = {
+  generatedAt: string;
+  role: BridgeRole;
+  activeProfile: BridgeC4Profile;
+  profileRules: {
+    label: string;
+    description: string;
+    volatilityMultiplier: number;
+    etaMultiplier: number;
+    returnPotentialMultiplier: number;
+    fleetCapacityPolicy: string;
+  };
+  availableProfiles: Array<{
+    key: BridgeC4Profile;
+    label: string;
+    description: string;
+  }>;
+  capabilities: BridgeCapabilities;
+  mapPresets: string[];
+};
+
+type BridgeAlert = {
+  id: string;
+  level: BridgeAlertLevel;
+  domain: "combat" | "economy" | "logistics" | "system";
+  title: string;
+  details: string;
+  createdAt: string;
+  acknowledged: boolean;
+};
+
+type BridgeAlertsResponse = {
+  generatedAt: string;
+  role: BridgeRole;
+  items: BridgeAlert[];
+};
+
+type BridgeAuditEvent = {
+  id: string;
+  eventType: "preflight-run" | "alert-ack";
+  role: BridgeRole;
+  profile?: BridgeC4Profile;
+  actorWallet?: string;
+  details: Record<string, unknown>;
+  createdAt: string;
+};
+
+type BridgeAuditResponse = {
+  generatedAt: string;
+  role: BridgeRole;
+  items: BridgeAuditEvent[];
+};
+
+type BridgeAuditFilterType = "all" | BridgeAuditEvent["eventType"];
+type BridgeAuditPeriod = "24h" | "7d" | "30d" | "all";
+
+type BridgePreflight = {
+  success: true;
+  generatedAt: string;
+  role: BridgeRole;
+  profile: BridgeC4Profile;
+  profileLabel: string;
+  operationType: BridgeOperationType;
+  operationValueUsd: number;
+  routeComplexity: number;
+  riskTolerance: BridgeRiskTolerance;
+  riskScore: number;
+  successProbability: number;
+  etaMinutes: number;
+  expectedPnlUsd: number;
+  bestCaseUsd: number;
+  worstCaseUsd: number;
+  assumptions: string[];
+};
+
+type WalletAuthChallengePayload = {
+  challengeId: string;
+  wallet: string;
+  nonce: string;
+  message: string;
+  createdAt: string;
+  expiresAt: string;
+};
+
+type WalletAuthChallengeResponse = {
+  success: true;
+  challenge: WalletAuthChallengePayload;
+  ttlMs: number;
+};
+
+type WalletAuthUserProfile = {
+  wallet: string;
+  registeredAt: string;
+  verifiedAt: string;
+  lastLoginAt: string;
+  loginCount: number;
+  isAdmin: boolean;
+};
+
+type WalletAuthVerifyResponse = {
+  success: true;
+  isNewRegistration: boolean;
+  token: string;
+  tokenType: "Bearer";
+  expiresAt: string;
+  user: WalletAuthUserProfile;
+};
+
+type WalletAuthSessionResponse = {
+  success: true;
+  user: WalletAuthUserProfile;
+  session: {
+    token: string;
+    createdAt: string;
+    expiresAt: string;
+  };
+};
+
 function parseListInput(input: string) {
   return Array.from(
     new Set(
@@ -135,12 +283,34 @@ function parseNonNegativeNumber(input: string) {
   return value;
 }
 
+function getErrorMessage(error: unknown) {
+  if (error instanceof ApiRequestError) {
+    return error.message || `HTTP ${error.status}`;
+  }
+
+  if (error instanceof Error) {
+    return error.message || error.name || "Неизвестная ошибка";
+  }
+
+  if (typeof error === "string") {
+    return error || "Неизвестная ошибка";
+  }
+
+  try {
+    const payload = JSON.stringify(error);
+    return payload && payload !== "{}" ? payload : "Неизвестная ошибка";
+  } catch {
+    return "Неизвестная ошибка";
+  }
+}
+
 function isLikelySolanaAddress(address: string) {
   return /^Demo[A-Za-z0-9_-]{2,}$/.test(address) || /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(address);
 }
 
 function App() {
-  const { publicKey, connected } = useWallet();
+  const { connection } = useConnection();
+  const { publicKey, connected, signMessage, signTransaction } = useWallet();
   const [activeTab, setActiveTab] = useState<
     "news" | "archive" | "dashboard" | "bridge" | "market" | "intel"
   >(
@@ -204,9 +374,127 @@ function App() {
   const [archiveData, setArchiveData] = useState<NewsArchiveResponse | null>(null);
   const [archiveLoading, setArchiveLoading] = useState(false);
   const [archiveError, setArchiveError] = useState<string | null>(null);
+  const [bridgeRole, setBridgeRole] = useState<BridgeRole>("Captain");
+  const [bridgeProfile, setBridgeProfile] = useState<BridgeC4Profile>("c4-transition");
+  const [bridgeConfig, setBridgeConfig] = useState<BridgeConfig | null>(null);
+  const [bridgeAlertsData, setBridgeAlertsData] = useState<BridgeAlert[]>([]);
+  const [bridgeAuditData, setBridgeAuditData] = useState<BridgeAuditEvent[]>([]);
+  const [bridgeAuditTypeFilter, setBridgeAuditTypeFilter] =
+    useState<BridgeAuditFilterType>("all");
+  const [bridgeAuditPeriodFilter, setBridgeAuditPeriodFilter] =
+    useState<BridgeAuditPeriod>("7d");
+  const [bridgeLoading, setBridgeLoading] = useState(false);
+  const [bridgeBusy, setBridgeBusy] = useState(false);
+  const [bridgeMessage, setBridgeMessage] = useState<string | null>(null);
+  const [bridgePreflight, setBridgePreflight] = useState<BridgePreflight | null>(null);
+  const [bridgePreflightForm, setBridgePreflightForm] = useState({
+    operationType: "fleet-dispatch" as BridgeOperationType,
+    operationValueUsd: "3500",
+    routeComplexity: "3",
+    riskTolerance: "medium" as BridgeRiskTolerance,
+  });
 
   const connectedWalletAddress = publicKey?.toBase58() || "";
   const marketWallet = connectedWalletAddress || manualMarketWallet;
+  const [walletAuthToken, setWalletAuthToken] = useState<string>(() => {
+    if (typeof window === "undefined") {
+      return "";
+    }
+    return window.localStorage.getItem("walletAuthToken") || "";
+  });
+  const [walletAuthUser, setWalletAuthUser] = useState<WalletAuthUserProfile | null>(null);
+  const [walletAuthBusy, setWalletAuthBusy] = useState(false);
+  const [walletAuthMessage, setWalletAuthMessage] = useState<string | null>(null);
+
+  const bridgeFilteredAuditData = useMemo(() => {
+    const now = Date.now();
+    const periodMsMap: Record<BridgeAuditPeriod, number> = {
+      "24h": 24 * 60 * 60 * 1000,
+      "7d": 7 * 24 * 60 * 60 * 1000,
+      "30d": 30 * 24 * 60 * 60 * 1000,
+      all: Number.POSITIVE_INFINITY,
+    };
+
+    const maxAgeMs = periodMsMap[bridgeAuditPeriodFilter];
+
+    return bridgeAuditData.filter((event) => {
+      if (bridgeAuditTypeFilter !== "all" && event.eventType !== bridgeAuditTypeFilter) {
+        return false;
+      }
+
+      if (!Number.isFinite(maxAgeMs)) {
+        return true;
+      }
+
+      const createdAtMs = new Date(event.createdAt).getTime();
+      if (!Number.isFinite(createdAtMs)) {
+        return false;
+      }
+
+      return now - createdAtMs <= maxAgeMs;
+    });
+  }, [bridgeAuditData, bridgeAuditPeriodFilter, bridgeAuditTypeFilter]);
+
+  const exportBridgeAudit = (format: "json" | "csv") => {
+    if (!bridgeFilteredAuditData.length) {
+      setBridgeMessage("Нет данных для экспорта Audit Trail по текущим фильтрам.");
+      return;
+    }
+
+    const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+    let content = "";
+    let filename = "";
+    let mimeType = "";
+
+    if (format === "json") {
+      content = JSON.stringify(bridgeFilteredAuditData, null, 2);
+      filename = `bridge-audit-${bridgeRole}-${timestamp}.json`;
+      mimeType = "application/json;charset=utf-8";
+    } else {
+      const escapeCsv = (value: unknown) => {
+        const text = String(value ?? "");
+        const escaped = text.replace(/"/g, '""');
+        return `"${escaped}"`;
+      };
+
+      const header = [
+        "id",
+        "eventType",
+        "role",
+        "profile",
+        "actorWallet",
+        "createdAt",
+        "details",
+      ].join(",");
+
+      const rows = bridgeFilteredAuditData.map((event) =>
+        [
+          escapeCsv(event.id),
+          escapeCsv(event.eventType),
+          escapeCsv(event.role),
+          escapeCsv(event.profile || ""),
+          escapeCsv(event.actorWallet || ""),
+          escapeCsv(event.createdAt),
+          escapeCsv(JSON.stringify(event.details)),
+        ].join(","),
+      );
+
+      content = [header, ...rows].join("\n");
+      filename = `bridge-audit-${bridgeRole}-${timestamp}.csv`;
+      mimeType = "text/csv;charset=utf-8";
+    }
+
+    const blob = new Blob([content], { type: mimeType });
+    const objectUrl = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = objectUrl;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(objectUrl);
+    setBridgeMessage(`Audit Trail экспортирован: ${filename}`);
+  };
 
   const visibleAssets = useMemo(() => {
     if (!data) {
@@ -266,6 +554,230 @@ function App() {
     )[0];
   }, [visibleAssets]);
 
+  const refreshWalletSession = async (token: string) => {
+    if (!token) {
+      setWalletAuthUser(null);
+      return;
+    }
+
+    try {
+      const payload = await apiRequest<WalletAuthSessionResponse>(
+        "/api/auth/wallet/session",
+        {
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        },
+      );
+      setWalletAuthUser(payload.user);
+    } catch (sessionError) {
+      setWalletAuthToken("");
+      setWalletAuthUser(null);
+      if (typeof window !== "undefined") {
+        window.localStorage.removeItem("walletAuthToken");
+      }
+      console.error(sessionError);
+    }
+  };
+
+  const registerAndVerifyWallet = async () => {
+    if (!connected || !connectedWalletAddress) {
+      setWalletAuthMessage("Подключи Solana wallet для регистрации и верификации.");
+      return;
+    }
+
+    if (!signMessage) {
+      setWalletAuthMessage(
+        "Текущий кошелек/аккаунт не поддерживает подпись сообщений. Для Solflare Ledger обычно нужен не-Ledger аккаунт для signMessage.",
+      );
+      return;
+    }
+
+    setWalletAuthBusy(true);
+    setWalletAuthMessage(null);
+
+    try {
+      let challengePayload: WalletAuthChallengeResponse;
+      try {
+        challengePayload = await apiRequest<WalletAuthChallengeResponse>(
+          "/api/auth/wallet/challenge",
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              wallet: connectedWalletAddress,
+            }),
+          },
+        );
+      } catch (challengeError) {
+        setWalletAuthMessage(
+          `Не удалось получить challenge: ${getErrorMessage(challengeError)}`,
+        );
+        return;
+      }
+
+      let signatureBase64 = "";
+      try {
+        const signed = await signMessage(
+          new TextEncoder().encode(challengePayload.challenge.message),
+        );
+        signatureBase64 = btoa(String.fromCharCode(...signed));
+      } catch (signError) {
+        if (!signTransaction) {
+          setWalletAuthMessage(
+            `Ошибка подписи сообщения: ${getErrorMessage(signError)}. Проверь Solflare/Ledger и подтверди подпись на устройстве.`,
+          );
+          return;
+        }
+
+        try {
+          const memoPayload = `star-atlas-auth:${challengePayload.challenge.challengeId}:${challengePayload.challenge.nonce}`;
+          const memoInstruction = new TransactionInstruction({
+            keys: [],
+            programId: new PublicKey("MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr"),
+            data: new TextEncoder().encode(memoPayload) as unknown as never,
+          });
+
+          let blockhash = "11111111111111111111111111111111";
+          try {
+            const latest = await connection.getLatestBlockhash("confirmed");
+            if (latest?.blockhash) {
+              blockhash = latest.blockhash;
+            }
+          } catch {
+            // RPC can be forbidden/rate-limited in browser; use offline blockhash for local signing fallback.
+          }
+          const tx = new Transaction();
+          tx.add(memoInstruction);
+          tx.feePayer = new PublicKey(connectedWalletAddress);
+          tx.recentBlockhash = blockhash;
+
+          const signedTx = await signTransaction(tx);
+          const signedTxBase64 = btoa(
+            String.fromCharCode(
+              ...signedTx.serialize({ verifySignatures: false, requireAllSignatures: false }),
+            ),
+          );
+
+          let verifyByTxPayload: WalletAuthVerifyResponse;
+          try {
+            verifyByTxPayload = await apiRequest<WalletAuthVerifyResponse>(
+              "/api/auth/wallet/verify-transaction",
+              {
+                method: "POST",
+                headers: {
+                  "Content-Type": "application/json",
+                },
+                body: JSON.stringify({
+                  wallet: connectedWalletAddress,
+                  challengeId: challengePayload.challenge.challengeId,
+                  signedTransaction: signedTxBase64,
+                }),
+              },
+            );
+          } catch (verifyByTxError) {
+            setWalletAuthMessage(
+              `Ошибка fallback verify через transaction: ${getErrorMessage(verifyByTxError)}`,
+            );
+            return;
+          }
+
+          setWalletAuthToken(verifyByTxPayload.token);
+          setWalletAuthUser(verifyByTxPayload.user);
+          if (typeof window !== "undefined") {
+            window.localStorage.setItem("walletAuthToken", verifyByTxPayload.token);
+          }
+
+          setWalletAuthMessage(
+            verifyByTxPayload.isNewRegistration
+              ? "Кошелек зарегистрирован и верифицирован."
+              : "Кошелек успешно верифицирован. Сессия обновлена.",
+          );
+          return;
+        } catch (transactionFallbackError) {
+          setWalletAuthMessage(
+            `Ошибка подписи сообщения: ${getErrorMessage(signError)}. Fallback через transaction тоже не прошел: ${getErrorMessage(transactionFallbackError)}`,
+          );
+          return;
+        }
+      }
+
+      let verifyPayload: WalletAuthVerifyResponse;
+      try {
+        verifyPayload = await apiRequest<WalletAuthVerifyResponse>(
+          "/api/auth/wallet/verify",
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              wallet: connectedWalletAddress,
+              challengeId: challengePayload.challenge.challengeId,
+              signature: signatureBase64,
+            }),
+          },
+        );
+      } catch (verifyError) {
+        setWalletAuthMessage(
+          `Challenge подписан, но verify не прошел: ${getErrorMessage(verifyError)}`,
+        );
+        return;
+      }
+
+      setWalletAuthToken(verifyPayload.token);
+      setWalletAuthUser(verifyPayload.user);
+      if (typeof window !== "undefined") {
+        window.localStorage.setItem("walletAuthToken", verifyPayload.token);
+      }
+
+      setWalletAuthMessage(
+        verifyPayload.isNewRegistration
+          ? "Кошелек зарегистрирован и верифицирован."
+          : "Кошелек успешно верифицирован. Сессия обновлена.",
+      );
+    } catch (authError) {
+      setWalletAuthMessage(
+        `Не удалось завершить регистрацию/верификацию: ${getErrorMessage(authError)}`,
+      );
+      console.error(authError);
+    } finally {
+      setWalletAuthBusy(false);
+    }
+  };
+
+  const logoutWalletSession = async () => {
+    if (!walletAuthToken) {
+      setWalletAuthUser(null);
+      setWalletAuthMessage("Сессия уже завершена.");
+      return;
+    }
+
+    setWalletAuthBusy(true);
+    setWalletAuthMessage(null);
+
+    try {
+      await apiRequest("/api/auth/wallet/logout", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${walletAuthToken}`,
+        },
+      });
+    } catch (logoutError) {
+      console.error(logoutError);
+    } finally {
+      setWalletAuthToken("");
+      setWalletAuthUser(null);
+      if (typeof window !== "undefined") {
+        window.localStorage.removeItem("walletAuthToken");
+      }
+      setWalletAuthBusy(false);
+      setWalletAuthMessage("Сессия кошелька завершена.");
+    }
+  };
+
   const loadDashboard = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     setLoading(true);
@@ -295,6 +807,14 @@ function App() {
       setWallet(connectedWalletAddress);
     }
   }, [connectedWalletAddress]);
+
+  useEffect(() => {
+    if (walletAuthToken) {
+      void refreshWalletSession(walletAuthToken);
+      return;
+    }
+    setWalletAuthUser(null);
+  }, [walletAuthToken]);
 
   const loadMarketSettings = async () => {
     setSettingsBusy(true);
@@ -341,6 +861,11 @@ function App() {
     event.preventDefault();
     setListingsMessage(null);
 
+    if (!walletAuthToken) {
+      setListingsMessage("Сначала зарегистрируй и верифицируй кошелек.");
+      return;
+    }
+
     const sellerWallet = marketWallet.trim();
     if (!sellerWallet) {
       setListingsMessage("Сначала укажи кошелек в разделе Market.");
@@ -375,6 +900,7 @@ function App() {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
+          Authorization: `Bearer ${walletAuthToken}`,
         },
         body: JSON.stringify({
           itemName,
@@ -406,6 +932,11 @@ function App() {
   const buyListing = async (listingId: string) => {
     setListingsMessage(null);
 
+    if (!walletAuthToken) {
+      setListingsMessage("Сначала зарегистрируй и верифицируй кошелек.");
+      return;
+    }
+
     const buyerWallet = marketWallet.trim();
     if (!buyerWallet) {
       setListingsMessage("Для покупки укажи кошелек в разделе Market.");
@@ -422,6 +953,7 @@ function App() {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
+          Authorization: `Bearer ${walletAuthToken}`,
         },
         body: JSON.stringify({ buyerWallet }),
       });
@@ -454,6 +986,11 @@ function App() {
   const createBarter = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     setBartersMessage(null);
+
+    if (!walletAuthToken) {
+      setBartersMessage("Сначала зарегистрируй и верифицируй кошелек.");
+      return;
+    }
 
     const fromWallet = marketWallet.trim();
     if (!fromWallet) {
@@ -490,6 +1027,7 @@ function App() {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
+          Authorization: `Bearer ${walletAuthToken}`,
         },
         body: JSON.stringify({
           fromWallet,
@@ -512,6 +1050,11 @@ function App() {
   const respondBarter = async (id: string, action: "accept" | "decline") => {
     setBartersMessage(null);
 
+    if (!walletAuthToken) {
+      setBartersMessage("Сначала зарегистрируй и верифицируй кошелек.");
+      return;
+    }
+
     const responderWallet = marketWallet.trim();
     if (!responderWallet) {
       setBartersMessage("Для ответа на обмен укажи кошелек.");
@@ -528,6 +1071,7 @@ function App() {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
+          Authorization: `Bearer ${walletAuthToken}`,
         },
         body: JSON.stringify({ responderWallet, action }),
       });
@@ -617,6 +1161,125 @@ function App() {
     }
   };
 
+  const loadBridgeRuntime = async (
+    role: BridgeRole = bridgeRole,
+    profile: BridgeC4Profile = bridgeProfile,
+  ) => {
+    setBridgeLoading(true);
+    setBridgeMessage(null);
+
+    try {
+      const [config, alerts, audit] = await Promise.all([
+        apiRequest<BridgeConfig>(
+          `/api/bridge/config?role=${encodeURIComponent(role)}&profile=${encodeURIComponent(profile)}`,
+        ),
+        apiRequest<BridgeAlertsResponse>(
+          `/api/bridge/alerts?role=${encodeURIComponent(role)}&limit=12`,
+        ),
+        apiRequest<BridgeAuditResponse>(
+          `/api/bridge/audit?role=${encodeURIComponent(role)}&limit=10`,
+        ),
+      ]);
+
+      setBridgeConfig(config);
+      setBridgeRole(config.role);
+      setBridgeProfile(config.activeProfile);
+      setBridgeAlertsData(alerts.items);
+      setBridgeAuditData(audit.items);
+    } catch (bridgeError) {
+      setBridgeMessage("Не удалось загрузить C4 runtime для Captain Bridge.");
+      console.error(bridgeError);
+    } finally {
+      setBridgeLoading(false);
+    }
+  };
+
+  const runBridgePreflight = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setBridgeBusy(true);
+    setBridgeMessage(null);
+
+    const operationValueUsd = Number(bridgePreflightForm.operationValueUsd);
+    const routeComplexity = Number(bridgePreflightForm.routeComplexity);
+
+    if (!Number.isFinite(operationValueUsd) || operationValueUsd <= 0) {
+      setBridgeBusy(false);
+      setBridgeMessage("Для pre-flight укажи operation value больше 0.");
+      return;
+    }
+
+    if (!Number.isFinite(routeComplexity) || routeComplexity < 1 || routeComplexity > 5) {
+      setBridgeBusy(false);
+      setBridgeMessage("Сложность маршрута должна быть от 1 до 5.");
+      return;
+    }
+
+    try {
+      const payload = await apiRequest<BridgePreflight>("/api/bridge/preflight", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          role: bridgeRole,
+          profile: bridgeProfile,
+          operationType: bridgePreflightForm.operationType,
+          operationValueUsd,
+          routeComplexity,
+          riskTolerance: bridgePreflightForm.riskTolerance,
+        }),
+      });
+
+      setBridgePreflight(payload);
+      setBridgeMessage("Pre-flight расчет обновлен.");
+      const audit = await apiRequest<BridgeAuditResponse>(
+        `/api/bridge/audit?role=${encodeURIComponent(bridgeRole)}&limit=10`,
+      );
+      setBridgeAuditData(audit.items);
+    } catch (bridgeError) {
+      setBridgeMessage("Ошибка pre-flight расчета.");
+      console.error(bridgeError);
+    } finally {
+      setBridgeBusy(false);
+    }
+  };
+
+  const ackBridgeAlert = async (alertId: string) => {
+    setBridgeBusy(true);
+    setBridgeMessage(null);
+
+    try {
+      await apiRequest(`/api/bridge/alerts/${encodeURIComponent(alertId)}/ack`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          role: bridgeRole,
+          profile: bridgeProfile,
+          actorWallet: marketWallet || undefined,
+        }),
+      });
+
+      const [alerts, audit] = await Promise.all([
+        apiRequest<BridgeAlertsResponse>(
+          `/api/bridge/alerts?role=${encodeURIComponent(bridgeRole)}&limit=12`,
+        ),
+        apiRequest<BridgeAuditResponse>(
+          `/api/bridge/audit?role=${encodeURIComponent(bridgeRole)}&limit=10`,
+        ),
+      ]);
+      setBridgeAlertsData(alerts.items);
+      setBridgeAuditData(audit.items);
+      setBridgeMessage("Alert подтвержден.");
+    } catch (bridgeError) {
+      setBridgeMessage("Не удалось подтвердить alert.");
+      console.error(bridgeError);
+    } finally {
+      setBridgeBusy(false);
+    }
+  };
+
   useEffect(() => {
     if (activeTab === "market" && !marketSettings && !settingsBusy) {
       void loadMarketSettings();
@@ -647,6 +1310,12 @@ function App() {
     }
   }, [activeTab, archiveData, archiveLoading]);
 
+  useEffect(() => {
+    if (activeTab === "bridge" && !bridgeConfig && !bridgeLoading) {
+      void loadBridgeRuntime();
+    }
+  }, [activeTab, bridgeConfig, bridgeLoading]);
+
   const sourceLabel: Record<IntelSourceKey, string> = {
     official: "Official",
     medium: "Medium",
@@ -654,11 +1323,84 @@ function App() {
     discord: "Discord",
   };
 
+  const bridgeMapPresets = [
+    {
+      name: "Tactical",
+      payload: "Флоты ДАК, враги, риск-зоны, hot-ивенты 5-15с",
+    },
+    {
+      name: "Logistics",
+      payload: "Маршруты, груз, ETA, bottleneck и ресурсы в пути",
+    },
+    {
+      name: "Economy",
+      payload: "NAV, спреды, burn rate, маржа крафта vs market",
+    },
+    {
+      name: "Command",
+      payload: "Сводка по операциям, рискам и статусу API/воркеров",
+    },
+  ];
+
+  const bridgeOps = [
+    "Отправка/возврат флота",
+    "Логистический рейс",
+    "Разведка risk-зон",
+    "Торговый ордер",
+    "Ремонт после операции",
+  ];
+
+  const bridgeAlertPolicy = [
+    "Critical: потеря флота, срыв операции, недоступность источников",
+    "High: аномальные движения рынка, вход в risk-зону",
+    "Normal: завершение рейса, готовность крафта",
+    "Info: ежедневные сводки и soft-сигналы",
+  ];
+
+  const bridgeSecurity = [
+    "Wallet-only login + строгий allowlist",
+    "Access token 15м, refresh 7д с ротацией",
+    "Step-up подтверждение для Captain+ действий",
+    "Аудит команд и действий с correlation id",
+  ];
+
+  const bridgeMvp2Checklist = [
+    "2D карта с role-presets и ручными слоями",
+    "Базовые операции с pre-flight оценкой риска",
+    "In-app уведомления по уровням срочности",
+    "История минимум 30 дней + KPI по операциям",
+  ];
+
+  const bridgeRoles: BridgeRole[] = [
+    "Fleet Admiral",
+    "Admiral",
+    "Captain",
+    "Chief Specialist",
+    "Logistics Officer",
+    "Data Analyst",
+    "Market Trader",
+    "Threat Scout",
+    "Ensign",
+    "Allied Observer",
+  ];
+
+  const bridgeOperations: Array<{ key: BridgeOperationType; label: string }> = [
+    { key: "fleet-dispatch", label: "Fleet Dispatch" },
+    { key: "logistics-route", label: "Logistics Route" },
+    { key: "recon", label: "Recon" },
+    { key: "market-order", label: "Market Order" },
+    { key: "repair", label: "Repair" },
+  ];
+
   return (
     <main className="page">
       <header className="hero">
         <p className="tag">Star Atlas Command Center</p>
-        <h1>Аналитика флота и активов</h1>
+        <h1>
+          {activeTab === "bridge"
+            ? "Economic Vanguard"
+            : "Аналитика флота и активов"}
+        </h1>
         <p className="subtitle">
           Первый MVP: дашборд по аккаунту с расчетом стоимости, дневной
           доходности и окупаемости.
@@ -1027,11 +1769,33 @@ function App() {
       </section> : null}
 
       {activeTab === "bridge" ? (
-        <section className="panel">
-          <h2>Капитанский Мостик</h2>
+        <section className="panel bridge-panel">
+          <div className="bridge-atmosphere" aria-hidden="true">
+            <span className="bridge-orb bridge-orb-a" />
+            <span className="bridge-orb bridge-orb-b" />
+            <span className="bridge-orb bridge-orb-c" />
+            <span className="bridge-grid" />
+            <span className="bridge-scan" />
+          </div>
+
+          <div className="bridge-brand" aria-label="EV brand">
+            <div className="bridge-logo" aria-hidden="true">
+              <span>+EV</span>
+            </div>
+            <div className="bridge-brand-text">
+              <p className="bridge-brand-kicker">Операционный центр</p>
+              <h2>+EV</h2>
+              <p className="bridge-brand-note">
+                Economic Vanguard: единый контур управления аналитикой, рынком
+                и оперативными решениями гильдии.
+              </p>
+            </div>
+          </div>
+
+          <h2>Гильдия Economic Vanguard</h2>
           <p className="subtitle">
-            Быстрый центр управления: переходи к ключевым разделам и следи за
-            текущим состоянием приложения.
+            Командный мостик +EV: быстрый доступ к флоту, рынку и разведданным
+            для ежедневного управления операциями.
           </p>
 
           <div className="table-toolbar">
@@ -1058,6 +1822,332 @@ function App() {
             <article>
               <p>Последнее обновление Intel</p>
               <h2>{intelData ? new Date(intelData.generatedAt).toLocaleTimeString("ru-RU") : "Нет данных"}</h2>
+            </article>
+          </div>
+
+          <div className="bridge-runtime-controls">
+            <label htmlFor="bridge-role">Роль</label>
+            <select
+              id="bridge-role"
+              value={bridgeRole}
+              onChange={(event) => setBridgeRole(event.target.value as BridgeRole)}
+            >
+              {bridgeRoles.map((role) => (
+                <option key={role} value={role}>
+                  {role}
+                </option>
+              ))}
+            </select>
+
+            <label htmlFor="bridge-profile">C4 профиль</label>
+            <select
+              id="bridge-profile"
+              value={bridgeProfile}
+              onChange={(event) =>
+                setBridgeProfile(event.target.value as BridgeC4Profile)
+              }
+            >
+              {(bridgeConfig?.availableProfiles || []).map((profile) => (
+                <option key={profile.key} value={profile.key}>
+                  {profile.label}
+                </option>
+              ))}
+            </select>
+
+            <button
+              type="button"
+              disabled={bridgeLoading || bridgeBusy}
+              onClick={() => {
+                void loadBridgeRuntime(bridgeRole, bridgeProfile);
+              }}
+            >
+              {bridgeLoading ? "Обновление..." : "Обновить Runtime"}
+            </button>
+          </div>
+
+          {bridgeConfig ? (
+            <p className="bridge-runtime-note">
+              Профиль: <strong>{bridgeConfig.profileRules.label}</strong> · Политика
+              флота: <strong>{bridgeConfig.profileRules.fleetCapacityPolicy}</strong>
+              {" "}· Presets роли: {bridgeConfig.capabilities.visiblePresets.join(", ")}
+            </p>
+          ) : null}
+
+          {bridgeMessage ? <p className="note">{bridgeMessage}</p> : null}
+
+          <div className="bridge-live-layout">
+            <article className="bridge-card">
+              <h3>Pre-Flight Симуляция</h3>
+              <p className="bridge-card-lead">
+                C4-ready оценка перед запуском операции: риск, вероятность успеха
+                и ожидаемый PnL.
+              </p>
+
+              <form className="bridge-preflight-form" onSubmit={runBridgePreflight}>
+                <label htmlFor="bridge-op">Операция</label>
+                <select
+                  id="bridge-op"
+                  value={bridgePreflightForm.operationType}
+                  onChange={(event) =>
+                    setBridgePreflightForm((current) => ({
+                      ...current,
+                      operationType: event.target.value as BridgeOperationType,
+                    }))
+                  }
+                >
+                  {bridgeOperations.map((operation) => (
+                    <option key={operation.key} value={operation.key}>
+                      {operation.label}
+                    </option>
+                  ))}
+                </select>
+
+                <label htmlFor="bridge-value">Operation Value USD</label>
+                <input
+                  id="bridge-value"
+                  type="number"
+                  min="100"
+                  step="100"
+                  value={bridgePreflightForm.operationValueUsd}
+                  onChange={(event) =>
+                    setBridgePreflightForm((current) => ({
+                      ...current,
+                      operationValueUsd: event.target.value,
+                    }))
+                  }
+                />
+
+                <label htmlFor="bridge-complexity">Route Complexity (1-5)</label>
+                <input
+                  id="bridge-complexity"
+                  type="number"
+                  min="1"
+                  max="5"
+                  step="1"
+                  value={bridgePreflightForm.routeComplexity}
+                  onChange={(event) =>
+                    setBridgePreflightForm((current) => ({
+                      ...current,
+                      routeComplexity: event.target.value,
+                    }))
+                  }
+                />
+
+                <label htmlFor="bridge-risk">Risk Tolerance</label>
+                <select
+                  id="bridge-risk"
+                  value={bridgePreflightForm.riskTolerance}
+                  onChange={(event) =>
+                    setBridgePreflightForm((current) => ({
+                      ...current,
+                      riskTolerance: event.target.value as BridgeRiskTolerance,
+                    }))
+                  }
+                >
+                  <option value="low">Low</option>
+                  <option value="medium">Medium</option>
+                  <option value="high">High</option>
+                </select>
+
+                <button type="submit" disabled={bridgeBusy}>
+                  {bridgeBusy ? "Расчет..." : "Запустить Pre-Flight"}
+                </button>
+              </form>
+
+              {bridgePreflight ? (
+                <div className="bridge-preflight-result">
+                  <p>
+                    Risk Score: <strong>{bridgePreflight.riskScore}</strong> · Success:
+                    <strong> {bridgePreflight.successProbability}%</strong>
+                  </p>
+                  <p>
+                    ETA: <strong>{bridgePreflight.etaMinutes} мин</strong> · Expected PnL:
+                    <strong> ${bridgePreflight.expectedPnlUsd.toLocaleString()}</strong>
+                  </p>
+                  <p>
+                    Best/Worst: <strong>${bridgePreflight.bestCaseUsd.toLocaleString()}</strong>
+                    {" / "}
+                    <strong>${bridgePreflight.worstCaseUsd.toLocaleString()}</strong>
+                  </p>
+                </div>
+              ) : null}
+            </article>
+
+            <article className="bridge-card">
+              <h3>Live Alerts</h3>
+              <p className="bridge-card-lead">
+                Ролевой поток событий с подтверждением (ack) для оперативного
+                цикла.
+              </p>
+
+              <div className="bridge-alerts-list">
+                {bridgeAlertsData.map((alert) => (
+                  <div key={alert.id} className={`bridge-alert bridge-alert-${alert.level}`}>
+                    <p className="bridge-alert-meta">
+                      <span>{alert.level.toUpperCase()}</span>
+                      <span>{alert.domain}</span>
+                    </p>
+                    <h4>{alert.title}</h4>
+                    <p>{alert.details}</p>
+                    <p className="bridge-alert-time">
+                      {new Date(alert.createdAt).toLocaleString("ru-RU")}
+                    </p>
+                    <button
+                      type="button"
+                      disabled={alert.acknowledged || bridgeBusy}
+                      onClick={() => {
+                        void ackBridgeAlert(alert.id);
+                      }}
+                    >
+                      {alert.acknowledged ? "Подтверждено" : "Подтвердить"}
+                    </button>
+                  </div>
+                ))}
+
+                {!bridgeAlertsData.length ? (
+                  <p className="placeholder">Для роли нет активных alerts.</p>
+                ) : null}
+              </div>
+            </article>
+
+            <article className="bridge-card">
+              <h3>Audit Trail</h3>
+              <p className="bridge-card-lead">
+                История pre-flight и подтверждений alert по текущей роли Captain
+                Bridge.
+              </p>
+
+              <div className="bridge-audit-toolbar">
+                <label>
+                  Тип события
+                  <select
+                    value={bridgeAuditTypeFilter}
+                    onChange={(event) =>
+                      setBridgeAuditTypeFilter(event.target.value as BridgeAuditFilterType)
+                    }
+                  >
+                    <option value="all">Все</option>
+                    <option value="preflight-run">Preflight</option>
+                    <option value="alert-ack">Alert Ack</option>
+                  </select>
+                </label>
+
+                <label>
+                  Период
+                  <select
+                    value={bridgeAuditPeriodFilter}
+                    onChange={(event) =>
+                      setBridgeAuditPeriodFilter(event.target.value as BridgeAuditPeriod)
+                    }
+                  >
+                    <option value="24h">24 часа</option>
+                    <option value="7d">7 дней</option>
+                    <option value="30d">30 дней</option>
+                    <option value="all">Все время</option>
+                  </select>
+                </label>
+
+                <div className="bridge-audit-actions">
+                  <button type="button" onClick={() => exportBridgeAudit("json")}>
+                    Export JSON
+                  </button>
+                  <button type="button" onClick={() => exportBridgeAudit("csv")}>
+                    Export CSV
+                  </button>
+                </div>
+              </div>
+
+              <div className="bridge-audit-list">
+                {bridgeFilteredAuditData.map((event) => (
+                  <div key={event.id} className="bridge-audit-item">
+                    <p className="bridge-alert-meta">
+                      <span>{event.eventType === "preflight-run" ? "PREFLIGHT" : "ACK"}</span>
+                      <span>{event.profile || "n/a"}</span>
+                    </p>
+                    <p className="bridge-audit-title">
+                      {event.eventType === "preflight-run"
+                        ? `Операция ${String(event.details.operationType || "unknown")}`
+                        : `Alert ${String(event.details.alertId || "unknown")}`}
+                    </p>
+                    <p className="bridge-alert-time">
+                      {new Date(event.createdAt).toLocaleString("ru-RU")}
+                    </p>
+                  </div>
+                ))}
+
+                {!bridgeFilteredAuditData.length ? (
+                  <p className="placeholder">Нет событий для выбранных фильтров.</p>
+                ) : null}
+              </div>
+            </article>
+          </div>
+
+          <div className="bridge-grid-layout">
+            <article className="bridge-card">
+              <h3>Карта И Пресеты Ролей</h3>
+              <p className="bridge-card-lead">
+                Режим 2D top-down, все пространство Star Atlas, read-only карта в
+                MVP с профильными пресетами.
+              </p>
+              <ul className="bridge-list">
+                {bridgeMapPresets.map((preset) => (
+                  <li key={preset.name}>
+                    <strong>{preset.name}:</strong> {preset.payload}
+                  </li>
+                ))}
+              </ul>
+            </article>
+
+            <article className="bridge-card">
+              <h3>Операции MVP 2</h3>
+              <p className="bridge-card-lead">
+                Контур запуска с pre-flight проверкой: ETA, риск,
+                профит/убыток, вероятность успеха.
+              </p>
+              <ul className="bridge-list">
+                {bridgeOps.map((item) => (
+                  <li key={item}>{item}</li>
+                ))}
+              </ul>
+            </article>
+
+            <article className="bridge-card">
+              <h3>Уведомления И Эскалации</h3>
+              <p className="bridge-card-lead">
+                Приоритетная модель Critical/High/Normal/Info с ролевой
+                доставкой и подтверждением для критичных кейсов.
+              </p>
+              <ul className="bridge-list">
+                {bridgeAlertPolicy.map((item) => (
+                  <li key={item}>{item}</li>
+                ))}
+              </ul>
+            </article>
+
+            <article className="bridge-card">
+              <h3>Доступ И Безопасность</h3>
+              <p className="bridge-card-lead">
+                Приватный контур одной ДАК с аудитом, allowlist и
+                управлением сессиями.
+              </p>
+              <ul className="bridge-list">
+                {bridgeSecurity.map((item) => (
+                  <li key={item}>{item}</li>
+                ))}
+              </ul>
+            </article>
+
+            <article className="bridge-card bridge-card-wide">
+              <h3>MVP 2 Readiness</h3>
+              <p className="bridge-card-lead">
+                Операционный baseline из QA: что должно быть в первом рабочем
+                релизе мостика.
+              </p>
+              <ul className="bridge-list bridge-list-compact">
+                {bridgeMvp2Checklist.map((item) => (
+                  <li key={item}>{item}</li>
+                ))}
+              </ul>
             </article>
           </div>
         </section>
@@ -1089,6 +2179,45 @@ function App() {
                 placeholder="Введи кошелек вручную (fallback)"
               />
             ) : null}
+
+            <div className="wallet-auth-card">
+              <p className="wallet-auth-title">Регистрация и верификация по кошельку</p>
+              <p className="wallet-auth-subtitle">
+                Подпиши challenge в кошельке, чтобы создать/подтвердить аккаунт и открыть сессию.
+              </p>
+              <div className="wallet-auth-actions">
+                <button
+                  type="button"
+                  onClick={() => {
+                    void registerAndVerifyWallet();
+                  }}
+                  disabled={!connected || walletAuthBusy}
+                >
+                  {walletAuthBusy ? "Подпись..." : "Зарегистрировать и верифицировать"}
+                </button>
+                <button
+                  type="button"
+                  className="wallet-auth-secondary"
+                  onClick={() => {
+                    void logoutWalletSession();
+                  }}
+                  disabled={walletAuthBusy || !walletAuthToken}
+                >
+                  Выйти из сессии
+                </button>
+              </div>
+
+              {walletAuthUser ? (
+                <p className="wallet-auth-state">
+                  Верифицирован: {walletAuthUser.wallet.slice(0, 4)}...{walletAuthUser.wallet.slice(-4)} ·
+                  входов: {walletAuthUser.loginCount} · роль: {walletAuthUser.isAdmin ? "Admin" : "Member"}
+                </p>
+              ) : (
+                <p className="wallet-auth-state">Сессия не активна.</p>
+              )}
+
+              {walletAuthMessage ? <p className="wallet-auth-message">{walletAuthMessage}</p> : null}
+            </div>
           </div>
 
           <div className="section-tabs market-subtabs">

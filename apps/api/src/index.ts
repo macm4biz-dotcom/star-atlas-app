@@ -1,11 +1,14 @@
 import Fastify from "fastify";
+import type { FastifyReply, FastifyRequest } from "fastify";
 import cors from "@fastify/cors";
 import { existsSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
+import { randomBytes } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { config as loadEnv } from "dotenv";
-import { Connection, PublicKey } from "@solana/web3.js";
+import { Connection, PublicKey, Transaction } from "@solana/web3.js";
+import nacl from "tweetnacl";
 import type {
   DashboardSnapshot,
   FleetAsset,
@@ -76,6 +79,18 @@ function parseCommaSeparatedList(value: string | undefined, fallback: string[]) 
       source
         .split(",")
         .map((item) => item.trim().toLowerCase())
+        .filter(Boolean),
+    ),
+  );
+}
+
+function parseWalletAllowlist(value: string | undefined, fallback: string[]) {
+  const source = value || fallback.join(",");
+  return Array.from(
+    new Set(
+      source
+        .split(",")
+        .map((item) => item.trim())
         .filter(Boolean),
     ),
   );
@@ -251,6 +266,343 @@ type NewsArchiveResponse = {
   entries: NewsArchiveEntry[];
 };
 
+type BridgeRole =
+  | "Fleet Admiral"
+  | "Admiral"
+  | "Captain"
+  | "Chief Specialist"
+  | "Logistics Officer"
+  | "Data Analyst"
+  | "Market Trader"
+  | "Threat Scout"
+  | "Ensign"
+  | "Allied Observer";
+
+type BridgeAlertLevel = "critical" | "high" | "normal" | "info";
+type BridgeRiskTolerance = "low" | "medium" | "high";
+type BridgeOperationType =
+  | "fleet-dispatch"
+  | "logistics-route"
+  | "recon"
+  | "market-order"
+  | "repair";
+type BridgeC4Profile = "pre-c4" | "c4-transition" | "c4-live";
+
+type BridgeRoleCapabilities = {
+  canApproveCritical: boolean;
+  canRunOperations: boolean;
+  visiblePresets: Array<"Tactical" | "Logistics" | "Economy" | "Threat" | "Command">;
+  notifications: BridgeAlertLevel[];
+};
+
+type BridgeProfileRules = {
+  label: string;
+  description: string;
+  volatilityMultiplier: number;
+  etaMultiplier: number;
+  returnPotentialMultiplier: number;
+  fleetCapacityPolicy: string;
+};
+
+type BridgeAlert = {
+  id: string;
+  level: BridgeAlertLevel;
+  domain: "combat" | "economy" | "logistics" | "system";
+  title: string;
+  details: string;
+  createdAt: string;
+  targetRoles: BridgeRole[];
+  acknowledgedBy: Array<{
+    role: BridgeRole;
+    actorWallet?: string;
+    time: string;
+  }>;
+};
+
+type BridgeAuditEvent = {
+  id: string;
+  eventType: "preflight-run" | "alert-ack";
+  role: BridgeRole;
+  profile?: BridgeC4Profile;
+  actorWallet?: string;
+  details: Record<string, unknown>;
+  createdAt: string;
+};
+
+type WalletAuthUser = {
+  id: string;
+  wallet: string;
+  registeredAt: string;
+  verifiedAt: string;
+  lastLoginAt: string;
+  loginCount: number;
+};
+
+type WalletAuthChallenge = {
+  challengeId: string;
+  wallet: string;
+  nonce: string;
+  message: string;
+  createdAt: string;
+  expiresAt: string;
+};
+
+type WalletAuthSession = {
+  token: string;
+  wallet: string;
+  createdAt: string;
+  expiresAt: string;
+};
+
+const BRIDGE_DEFAULT_ROLE: BridgeRole = "Captain";
+const BRIDGE_DEFAULT_PROFILE: BridgeC4Profile = "c4-transition";
+const BRIDGE_PROFILES: Record<BridgeC4Profile, BridgeProfileRules> = {
+  "pre-c4": {
+    label: "Pre-C4 Baseline",
+    description: "Стабильный режим до обновления C4, ниже рыночная турбулентность.",
+    volatilityMultiplier: 1,
+    etaMultiplier: 1,
+    returnPotentialMultiplier: 1,
+    fleetCapacityPolicy: "legacy-capacity",
+  },
+  "c4-transition": {
+    label: "C4 Transition",
+    description: "Переходный режим: меняются правила флотов и экономики, повышенная неопределенность.",
+    volatilityMultiplier: 1.18,
+    etaMultiplier: 1.1,
+    returnPotentialMultiplier: 1.08,
+    fleetCapacityPolicy: "perk-sensitive",
+  },
+  "c4-live": {
+    label: "C4 Live",
+    description: "Актуальный C4-режим: перки и прокачка влияют на лимиты и эффективность.",
+    volatilityMultiplier: 1.32,
+    etaMultiplier: 1.16,
+    returnPotentialMultiplier: 1.14,
+    fleetCapacityPolicy: "perk-gated",
+  },
+};
+
+const BRIDGE_ROLE_CAPABILITIES: Record<BridgeRole, BridgeRoleCapabilities> = {
+  "Fleet Admiral": {
+    canApproveCritical: true,
+    canRunOperations: true,
+    visiblePresets: ["Tactical", "Logistics", "Economy", "Threat", "Command"],
+    notifications: ["critical", "high", "normal", "info"],
+  },
+  Admiral: {
+    canApproveCritical: true,
+    canRunOperations: true,
+    visiblePresets: ["Tactical", "Logistics", "Economy", "Threat", "Command"],
+    notifications: ["critical", "high", "normal", "info"],
+  },
+  Captain: {
+    canApproveCritical: true,
+    canRunOperations: true,
+    visiblePresets: ["Tactical", "Logistics", "Economy", "Command"],
+    notifications: ["critical", "high", "normal"],
+  },
+  "Chief Specialist": {
+    canApproveCritical: false,
+    canRunOperations: true,
+    visiblePresets: ["Logistics", "Economy", "Command"],
+    notifications: ["high", "normal", "info"],
+  },
+  "Logistics Officer": {
+    canApproveCritical: false,
+    canRunOperations: true,
+    visiblePresets: ["Logistics", "Command"],
+    notifications: ["high", "normal"],
+  },
+  "Data Analyst": {
+    canApproveCritical: false,
+    canRunOperations: false,
+    visiblePresets: ["Economy", "Command"],
+    notifications: ["normal", "info"],
+  },
+  "Market Trader": {
+    canApproveCritical: false,
+    canRunOperations: true,
+    visiblePresets: ["Economy", "Command"],
+    notifications: ["high", "normal", "info"],
+  },
+  "Threat Scout": {
+    canApproveCritical: false,
+    canRunOperations: true,
+    visiblePresets: ["Tactical", "Threat", "Command"],
+    notifications: ["critical", "high", "normal"],
+  },
+  Ensign: {
+    canApproveCritical: false,
+    canRunOperations: false,
+    visiblePresets: ["Command"],
+    notifications: ["normal", "info"],
+  },
+  "Allied Observer": {
+    canApproveCritical: false,
+    canRunOperations: false,
+    visiblePresets: ["Command"],
+    notifications: ["info"],
+  },
+};
+
+const bridgeAlertsStore: BridgeAlert[] = [
+  {
+    id: "alt-bridge-1001",
+    level: "critical",
+    domain: "system",
+    title: "RPC latency spike",
+    details: "Задержка Solana RPC превышает 2.2с, используйте fallback endpoint.",
+    createdAt: new Date(Date.now() - 11 * 60 * 1000).toISOString(),
+    targetRoles: ["Fleet Admiral", "Admiral", "Captain", "Threat Scout"],
+    acknowledgedBy: [],
+  },
+  {
+    id: "alt-bridge-1002",
+    level: "high",
+    domain: "economy",
+    title: "ATLAS volatility increased",
+    details: "В переходном C4-профиле волатильность выше baseline, пересчитайте pre-flight.",
+    createdAt: new Date(Date.now() - 36 * 60 * 1000).toISOString(),
+    targetRoles: ["Fleet Admiral", "Admiral", "Captain", "Market Trader", "Data Analyst"],
+    acknowledgedBy: [],
+  },
+  {
+    id: "alt-bridge-1003",
+    level: "normal",
+    domain: "logistics",
+    title: "Route 7 completed",
+    details: "Логистический рейс завершен без потерь. Обновите burn rate и ETA модель.",
+    createdAt: new Date(Date.now() - 82 * 60 * 1000).toISOString(),
+    targetRoles: ["Captain", "Chief Specialist", "Logistics Officer"],
+    acknowledgedBy: [],
+  },
+];
+
+function clamp(value: number, min: number, max: number) {
+  return Math.max(min, Math.min(max, value));
+}
+
+function resolveBridgeRole(input: string | undefined): BridgeRole {
+  if (!input) {
+    return BRIDGE_DEFAULT_ROLE;
+  }
+
+  const role = Object.keys(BRIDGE_ROLE_CAPABILITIES).find(
+    (item) => item.toLowerCase() === input.toLowerCase(),
+  );
+  return (role as BridgeRole | undefined) || BRIDGE_DEFAULT_ROLE;
+}
+
+function resolveBridgeProfile(input: string | undefined): BridgeC4Profile {
+  if (!input) {
+    return (process.env.BRIDGE_C4_PROFILE as BridgeC4Profile) || BRIDGE_DEFAULT_PROFILE;
+  }
+
+  const profile = Object.keys(BRIDGE_PROFILES).find(
+    (item) => item.toLowerCase() === input.toLowerCase(),
+  );
+  return (profile as BridgeC4Profile | undefined) || BRIDGE_DEFAULT_PROFILE;
+}
+
+function runBridgePreflight(params: {
+  operationType: BridgeOperationType;
+  operationValueUsd: number;
+  routeComplexity: number;
+  riskTolerance: BridgeRiskTolerance;
+  role: BridgeRole;
+  profile: BridgeC4Profile;
+}) {
+  const riskByOperation: Record<BridgeOperationType, number> = {
+    "fleet-dispatch": 46,
+    "logistics-route": 38,
+    recon: 42,
+    "market-order": 34,
+    repair: 26,
+  };
+
+  const toleranceShift: Record<BridgeRiskTolerance, number> = {
+    low: -6,
+    medium: 0,
+    high: 6,
+  };
+
+  const etaByOperation: Record<BridgeOperationType, number> = {
+    "fleet-dispatch": 130,
+    "logistics-route": 220,
+    recon: 160,
+    "market-order": 40,
+    repair: 95,
+  };
+
+  const marginByOperation: Record<BridgeOperationType, number> = {
+    "fleet-dispatch": 0.12,
+    "logistics-route": 0.15,
+    recon: 0.09,
+    "market-order": 0.07,
+    repair: 0.03,
+  };
+
+  const profileRules = BRIDGE_PROFILES[params.profile];
+  const roleCaps = BRIDGE_ROLE_CAPABILITIES[params.role];
+  const complexity = clamp(params.routeComplexity, 1, 5);
+  const complexityMultiplier = 1 + (complexity - 3) * 0.12;
+
+  const baseRisk = riskByOperation[params.operationType];
+  const roleRiskBonus = roleCaps.canApproveCritical ? -3 : 2;
+  const rawRisk =
+    baseRisk * profileRules.volatilityMultiplier * complexityMultiplier +
+    toleranceShift[params.riskTolerance] +
+    roleRiskBonus;
+  const riskScore = clamp(Math.round(rawRisk), 8, 97);
+
+  const successProbability = clamp(
+    Math.round(100 - riskScore * 0.84 + (roleCaps.canApproveCritical ? 5 : 0)),
+    6,
+    95,
+  );
+
+  const etaMinutes = Math.round(
+    etaByOperation[params.operationType] * profileRules.etaMultiplier * complexityMultiplier,
+  );
+
+  const operationValueUsd = Math.max(100, params.operationValueUsd);
+  const expectedPnlUsd = Math.round(
+    operationValueUsd *
+      (marginByOperation[params.operationType] * profileRules.returnPotentialMultiplier -
+        riskScore / 140),
+  );
+  const bestCaseUsd = Math.round(
+    operationValueUsd *
+      marginByOperation[params.operationType] *
+      profileRules.returnPotentialMultiplier *
+      2.2,
+  );
+  const worstCaseUsd = Math.round(operationValueUsd * (riskScore / 100) * 0.78);
+
+  return {
+    generatedAt: new Date().toISOString(),
+    role: params.role,
+    profile: params.profile,
+    profileLabel: profileRules.label,
+    operationType: params.operationType,
+    operationValueUsd,
+    routeComplexity: complexity,
+    riskTolerance: params.riskTolerance,
+    riskScore,
+    successProbability,
+    etaMinutes,
+    expectedPnlUsd,
+    bestCaseUsd,
+    worstCaseUsd,
+    assumptions: [
+      `C4 profile: ${profileRules.label}`,
+      `Fleet policy: ${profileRules.fleetCapacityPolicy}`,
+      "Monte Carlo deep simulation planned for phase 2.",
+    ],
+  };
+}
+
 const marketListings: MarketListing[] = [
   {
     id: "lst-1001",
@@ -314,6 +666,217 @@ const barterOffers: BarterOffer[] = [
 function createId(prefix: string) {
   const token = Math.random().toString(36).slice(2, 10);
   return `${prefix}-${token}`;
+}
+
+function createAuthToken() {
+  return randomBytes(32).toString("hex");
+}
+
+function normalizeWalletAddress(wallet: string) {
+  return String(wallet || "").trim();
+}
+
+function isAdminWallet(wallet: string) {
+  return WALLET_AUTH_ADMIN_WALLETS.has(wallet);
+}
+
+function isValidSolanaWallet(wallet: string) {
+  try {
+    const publicKey = new PublicKey(wallet);
+    return publicKey.toBase58() === wallet;
+  } catch {
+    return false;
+  }
+}
+
+function createWalletChallenge(wallet: string): WalletAuthChallenge {
+  const createdAt = new Date().toISOString();
+  const expiresAt = new Date(Date.now() + WALLET_AUTH_CHALLENGE_TTL_MS).toISOString();
+  const nonce = randomBytes(16).toString("hex");
+  const challengeId = createId("wch");
+  const message = [
+    "Star Atlas Wallet Verification",
+    `Wallet: ${wallet}`,
+    `Nonce: ${nonce}`,
+    `Issued At: ${createdAt}`,
+    `Expires At: ${expiresAt}`,
+    "Purpose: Login and wallet registration",
+  ].join("\n");
+
+  return {
+    challengeId,
+    wallet,
+    nonce,
+    message,
+    createdAt,
+    expiresAt,
+  };
+}
+
+function verifyWalletSignature(wallet: string, message: string, signatureBase64: string) {
+  try {
+    const publicKey = new PublicKey(wallet);
+    const rawSignature = Buffer.from(signatureBase64, "base64");
+    // Some wallet providers may include an extra recovery byte.
+    const signature =
+      rawSignature.length > 64 ? rawSignature.subarray(0, 64) : rawSignature;
+
+    const utf8Message = Buffer.from(message, "utf-8");
+    const prefixedMessageWithLength = Buffer.from(
+      `\u0017Solana Signed Message:\n${message.length}${message}`,
+      "utf-8",
+    );
+    const prefixedMessageNoLength = Buffer.from(
+      `\u0017Solana Signed Message:\n${message}`,
+      "utf-8",
+    );
+
+    const candidateMessages = [
+      utf8Message,
+      prefixedMessageWithLength,
+      prefixedMessageNoLength,
+    ];
+
+    return candidateMessages.some((candidate) =>
+      nacl.sign.detached.verify(candidate, signature, publicKey.toBytes()),
+    );
+  } catch {
+    return false;
+  }
+}
+
+const MEMO_PROGRAM_ID = "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr";
+
+function buildWalletAuthMemo(challengeId: string, nonce: string) {
+  return `star-atlas-auth:${challengeId}:${nonce}`;
+}
+
+function verifyWalletAuthSignedTransaction(
+  wallet: string,
+  challengeId: string,
+  nonce: string,
+  serializedTransactionBase64: string,
+) {
+  try {
+    const raw = Buffer.from(serializedTransactionBase64, "base64");
+    const tx = Transaction.from(raw);
+
+    if (!tx.verifySignatures()) {
+      return false;
+    }
+
+    const feePayer = tx.feePayer?.toBase58();
+    if (!feePayer || feePayer !== wallet) {
+      return false;
+    }
+
+    const hasWalletSignature = tx.signatures.some(
+      (entry) => entry.publicKey.toBase58() === wallet && Boolean(entry.signature),
+    );
+    if (!hasWalletSignature) {
+      return false;
+    }
+
+    const expectedMemo = buildWalletAuthMemo(challengeId, nonce);
+    const hasExpectedMemo = tx.instructions.some(
+      (instruction) =>
+        instruction.programId.toBase58() === MEMO_PROGRAM_ID &&
+        instruction.data.toString("utf-8") === expectedMemo,
+    );
+
+    return hasExpectedMemo;
+  } catch {
+    return false;
+  }
+}
+
+function getBearerToken(request: FastifyRequest) {
+  const rawHeader = String(request.headers.authorization || "").trim();
+  if (!rawHeader.toLowerCase().startsWith("bearer ")) {
+    return "";
+  }
+  return rawHeader.slice(7).trim();
+}
+
+function requireWalletAuthSession(request: FastifyRequest, reply: FastifyReply) {
+  pruneWalletAuthStores();
+
+  const token = getBearerToken(request);
+  if (!token) {
+    reply.code(401).send({ error: "Authorization Bearer token is required" });
+    return null;
+  }
+
+  const session = walletAuthSessionStore.get(token);
+  if (!session || new Date(session.expiresAt).getTime() <= Date.now()) {
+    walletAuthSessionStore.delete(token);
+    reply.code(401).send({ error: "Session expired or invalid" });
+    return null;
+  }
+
+  return session;
+}
+
+function pruneWalletAuthStores() {
+  const now = Date.now();
+
+  for (const [wallet, challenge] of walletAuthChallengeStore.entries()) {
+    if (new Date(challenge.expiresAt).getTime() <= now) {
+      walletAuthChallengeStore.delete(wallet);
+    }
+  }
+
+  for (const [token, session] of walletAuthSessionStore.entries()) {
+    if (new Date(session.expiresAt).getTime() <= now) {
+      walletAuthSessionStore.delete(token);
+    }
+  }
+}
+
+function upsertWalletAuthUser(wallet: string) {
+  const now = new Date().toISOString();
+  const existing = walletAuthUsersStore.find((user) => user.wallet === wallet);
+
+  if (existing) {
+    existing.verifiedAt = now;
+    existing.lastLoginAt = now;
+    existing.loginCount += 1;
+    return {
+      user: existing,
+      isNewRegistration: false,
+    };
+  }
+
+  const user: WalletAuthUser = {
+    id: createId("usr"),
+    wallet,
+    registeredAt: now,
+    verifiedAt: now,
+    lastLoginAt: now,
+    loginCount: 1,
+  };
+
+  walletAuthUsersStore = [user, ...walletAuthUsersStore];
+  return {
+    user,
+    isNewRegistration: true,
+  };
+}
+
+function createWalletAuthSession(wallet: string) {
+  const token = createAuthToken();
+  const createdAt = new Date().toISOString();
+  const expiresAt = new Date(Date.now() + WALLET_AUTH_SESSION_TTL_MS).toISOString();
+
+  const session: WalletAuthSession = {
+    token,
+    wallet,
+    createdAt,
+    expiresAt,
+  };
+
+  walletAuthSessionStore.set(token, session);
+  return session;
 }
 
 function buildSnapshot(handle: string): DashboardSnapshot {
@@ -712,6 +1275,17 @@ const STAR_ATLAS_ARCHIVE_WEEKLY_DAYS = Number(
   process.env.STAR_ATLAS_ARCHIVE_WEEKLY_DAYS || 7,
 );
 const NEWS_ARCHIVE_FILE = resolve(API_ROOT_DIR, "data", "news-archive.json");
+const BRIDGE_AUDIT_FILE = resolve(API_ROOT_DIR, "data", "bridge-audit-log.json");
+const WALLET_AUTH_USERS_FILE = resolve(API_ROOT_DIR, "data", "wallet-auth-users.json");
+const DEFAULT_WALLET_AUTH_ADMIN_WALLETS = [
+  "YQmg9nTsvVLUgtj35pY8WUPRVGHaz7KfmaCgPuS6bwY",
+];
+const WALLET_AUTH_ADMIN_WALLETS = new Set(
+  parseWalletAllowlist(
+    process.env.WALLET_AUTH_ADMIN_WALLETS,
+    DEFAULT_WALLET_AUTH_ADMIN_WALLETS,
+  ),
+);
 
 function parseDurationMs(value: string | undefined, fallbackMs: number) {
   const parsed = Number(value);
@@ -729,6 +1303,14 @@ const NEWS_ARCHIVE_CACHE_TTL_MS = parseDurationMs(
   process.env.NEWS_ARCHIVE_CACHE_TTL_MS,
   5 * 60 * 1000,
 );
+const WALLET_AUTH_CHALLENGE_TTL_MS = parseDurationMs(
+  process.env.WALLET_AUTH_CHALLENGE_TTL_MS,
+  15 * 60 * 1000,
+);
+const WALLET_AUTH_SESSION_TTL_MS = parseDurationMs(
+  process.env.WALLET_AUTH_SESSION_TTL_MS,
+  7 * 24 * 60 * 60 * 1000,
+);
 const UPSTASH_REDIS_REST_URL = (process.env.UPSTASH_REDIS_REST_URL || "").trim();
 const UPSTASH_REDIS_REST_TOKEN = (process.env.UPSTASH_REDIS_REST_TOKEN || "").trim();
 const CACHE_KEY_PREFIX = (process.env.CACHE_KEY_PREFIX || "star-atlas:cache").trim();
@@ -741,6 +1323,10 @@ type CacheEntry<T> = {
 
 const intelOverviewCache = new Map<number, CacheEntry<IntelOverview>>();
 const newsArchiveCache = new Map<number, CacheEntry<NewsArchiveResponse>>();
+let bridgeAuditStore: BridgeAuditEvent[] = [];
+let walletAuthUsersStore: WalletAuthUser[] = [];
+const walletAuthChallengeStore = new Map<string, WalletAuthChallenge>();
+const walletAuthSessionStore = new Map<string, WalletAuthSession>();
 
 function readCache<T>(cache: Map<number, CacheEntry<T>>, key: number) {
   const now = Date.now();
@@ -1364,6 +1950,55 @@ async function writeNewsArchiveEntries(entries: NewsArchiveEntry[]) {
   );
 }
 
+async function readBridgeAuditEvents() {
+  try {
+    const raw = await readFile(BRIDGE_AUDIT_FILE, "utf-8");
+    const parsed = JSON.parse(raw) as { events?: BridgeAuditEvent[] };
+    if (Array.isArray(parsed.events)) {
+      return parsed.events;
+    }
+    return [] as BridgeAuditEvent[];
+  } catch {
+    return [] as BridgeAuditEvent[];
+  }
+}
+
+async function writeBridgeAuditEvents(events: BridgeAuditEvent[]) {
+  await mkdir(dirname(BRIDGE_AUDIT_FILE), { recursive: true });
+  await writeFile(
+    BRIDGE_AUDIT_FILE,
+    JSON.stringify({ events }, null, 2),
+    "utf-8",
+  );
+}
+
+async function readWalletAuthUsers() {
+  try {
+    const raw = await readFile(WALLET_AUTH_USERS_FILE, "utf-8");
+    const parsed = JSON.parse(raw) as { users?: WalletAuthUser[] };
+    if (Array.isArray(parsed.users)) {
+      return parsed.users;
+    }
+    return [] as WalletAuthUser[];
+  } catch {
+    return [] as WalletAuthUser[];
+  }
+}
+
+async function writeWalletAuthUsers(users: WalletAuthUser[]) {
+  await mkdir(dirname(WALLET_AUTH_USERS_FILE), { recursive: true });
+  await writeFile(
+    WALLET_AUTH_USERS_FILE,
+    JSON.stringify({ users }, null, 2),
+    "utf-8",
+  );
+}
+
+async function appendBridgeAuditEvent(event: BridgeAuditEvent) {
+  bridgeAuditStore = [event, ...bridgeAuditStore].slice(0, 500);
+  await writeBridgeAuditEvents(bridgeAuditStore);
+}
+
 function formatRuDate(value: Date) {
   return value.toLocaleDateString("ru-RU");
 }
@@ -1860,6 +2495,200 @@ app.get(
   }),
 );
 
+app.post<{
+  Body: {
+    wallet?: string;
+  };
+}>("/api/auth/wallet/challenge", async (request, reply) => {
+  pruneWalletAuthStores();
+
+  const wallet = normalizeWalletAddress(request.body?.wallet || "");
+  if (!wallet || !isValidSolanaWallet(wallet)) {
+    return reply.code(400).send({ error: "Valid Solana wallet is required" });
+  }
+
+  const challenge = createWalletChallenge(wallet);
+  walletAuthChallengeStore.set(wallet, challenge);
+
+  return {
+    success: true,
+    challenge,
+    ttlMs: WALLET_AUTH_CHALLENGE_TTL_MS,
+  };
+});
+
+app.post<{
+  Body: {
+    wallet?: string;
+    challengeId?: string;
+    signature?: string;
+  };
+}>("/api/auth/wallet/verify", async (request, reply) => {
+  pruneWalletAuthStores();
+
+  const wallet = normalizeWalletAddress(request.body?.wallet || "");
+  const challengeId = String(request.body?.challengeId || "").trim();
+  const signature = String(request.body?.signature || "").trim();
+
+  if (!wallet || !isValidSolanaWallet(wallet)) {
+    return reply.code(400).send({ error: "Valid Solana wallet is required" });
+  }
+
+  if (!challengeId || !signature) {
+    return reply.code(400).send({ error: "challengeId and signature are required" });
+  }
+
+  const challenge = walletAuthChallengeStore.get(wallet);
+  if (!challenge || challenge.challengeId !== challengeId) {
+    return reply.code(400).send({ error: "Challenge not found or expired" });
+  }
+
+  if (new Date(challenge.expiresAt).getTime() <= Date.now()) {
+    walletAuthChallengeStore.delete(wallet);
+    return reply.code(400).send({ error: "Challenge expired" });
+  }
+
+  const isValidSignature = verifyWalletSignature(wallet, challenge.message, signature);
+  if (!isValidSignature) {
+    return reply.code(401).send({ error: "Invalid wallet signature" });
+  }
+
+  walletAuthChallengeStore.delete(wallet);
+  const { user, isNewRegistration } = upsertWalletAuthUser(wallet);
+  await writeWalletAuthUsers(walletAuthUsersStore);
+  const session = createWalletAuthSession(wallet);
+
+  return {
+    success: true,
+    isNewRegistration,
+    token: session.token,
+    tokenType: "Bearer",
+    expiresAt: session.expiresAt,
+    user: {
+      wallet: user.wallet,
+      registeredAt: user.registeredAt,
+      verifiedAt: user.verifiedAt,
+      lastLoginAt: user.lastLoginAt,
+      loginCount: user.loginCount,
+      isAdmin: isAdminWallet(user.wallet),
+    },
+  };
+});
+
+app.post<{
+  Body: {
+    wallet?: string;
+    challengeId?: string;
+    signedTransaction?: string;
+  };
+}>("/api/auth/wallet/verify-transaction", async (request, reply) => {
+  pruneWalletAuthStores();
+
+  const wallet = normalizeWalletAddress(request.body?.wallet || "");
+  const challengeId = String(request.body?.challengeId || "").trim();
+  const signedTransaction = String(request.body?.signedTransaction || "").trim();
+
+  if (!wallet || !isValidSolanaWallet(wallet)) {
+    return reply.code(400).send({ error: "Valid Solana wallet is required" });
+  }
+
+  if (!challengeId || !signedTransaction) {
+    return reply
+      .code(400)
+      .send({ error: "challengeId and signedTransaction are required" });
+  }
+
+  const challenge = walletAuthChallengeStore.get(wallet);
+  if (!challenge || challenge.challengeId !== challengeId) {
+    return reply.code(400).send({ error: "Challenge not found or expired" });
+  }
+
+  if (new Date(challenge.expiresAt).getTime() <= Date.now()) {
+    walletAuthChallengeStore.delete(wallet);
+    return reply.code(400).send({ error: "Challenge expired" });
+  }
+
+  const isValidSignedTransaction = verifyWalletAuthSignedTransaction(
+    wallet,
+    challengeId,
+    challenge.nonce,
+    signedTransaction,
+  );
+  if (!isValidSignedTransaction) {
+    return reply.code(401).send({ error: "Invalid signed transaction for challenge" });
+  }
+
+  walletAuthChallengeStore.delete(wallet);
+  const { user, isNewRegistration } = upsertWalletAuthUser(wallet);
+  await writeWalletAuthUsers(walletAuthUsersStore);
+  const session = createWalletAuthSession(wallet);
+
+  return {
+    success: true,
+    isNewRegistration,
+    token: session.token,
+    tokenType: "Bearer",
+    expiresAt: session.expiresAt,
+    user: {
+      wallet: user.wallet,
+      registeredAt: user.registeredAt,
+      verifiedAt: user.verifiedAt,
+      lastLoginAt: user.lastLoginAt,
+      loginCount: user.loginCount,
+      isAdmin: isAdminWallet(user.wallet),
+    },
+  };
+});
+
+app.get("/api/auth/wallet/session", async (request, reply) => {
+  pruneWalletAuthStores();
+
+  const token = getBearerToken(request);
+  if (!token) {
+    return reply.code(401).send({ error: "Authorization Bearer token is required" });
+  }
+
+  const session = walletAuthSessionStore.get(token);
+  if (!session || new Date(session.expiresAt).getTime() <= Date.now()) {
+    walletAuthSessionStore.delete(token);
+    return reply.code(401).send({ error: "Session expired or invalid" });
+  }
+
+  const user = walletAuthUsersStore.find((item) => item.wallet === session.wallet);
+  if (!user) {
+    return reply.code(404).send({ error: "User not found" });
+  }
+
+  return {
+    success: true,
+    user: {
+      wallet: user.wallet,
+      registeredAt: user.registeredAt,
+      verifiedAt: user.verifiedAt,
+      lastLoginAt: user.lastLoginAt,
+      loginCount: user.loginCount,
+      isAdmin: isAdminWallet(user.wallet),
+    },
+    session: {
+      token,
+      createdAt: session.createdAt,
+      expiresAt: session.expiresAt,
+    },
+  };
+});
+
+app.post("/api/auth/wallet/logout", async (request, reply) => {
+  const token = getBearerToken(request);
+  if (!token) {
+    return reply.code(401).send({ error: "Authorization Bearer token is required" });
+  }
+
+  walletAuthSessionStore.delete(token);
+  return {
+    success: true,
+  };
+});
+
 app.get<{ Params: { handle: string } }>(
   "/api/dashboard/:handle",
   async (request) => {
@@ -2055,11 +2884,21 @@ app.post<{
     note?: string;
   };
 }>("/api/market/listings", async (request, reply) => {
+  const session = requireWalletAuthSession(request, reply);
+  if (!session) {
+    return;
+  }
+
   const { itemName, itemClass, quantity, priceUsd, paymentToken, sellerWallet, note } =
     request.body || {};
 
   if (!itemName || !itemClass || !quantity || !priceUsd || !paymentToken || !sellerWallet) {
     return reply.code(400).send({ error: "Missing required listing fields" });
+  }
+
+  const requestedSellerWallet = String(sellerWallet).trim();
+  if (requestedSellerWallet && requestedSellerWallet !== session.wallet) {
+    return reply.code(403).send({ error: "sellerWallet must match authenticated wallet" });
   }
 
   const listing: MarketListing = {
@@ -2069,7 +2908,7 @@ app.post<{
     quantity: Number(quantity),
     priceUsd: Number(priceUsd),
     paymentToken,
-    sellerWallet: String(sellerWallet).trim(),
+    sellerWallet: session.wallet,
     note: note ? String(note).trim() : undefined,
     status: "active",
     createdAt: new Date().toISOString(),
@@ -2083,6 +2922,11 @@ app.post<{
   Params: { id: string };
   Body: { buyerWallet?: string };
 }>("/api/market/listings/:id/buy", async (request, reply) => {
+  const session = requireWalletAuthSession(request, reply);
+  if (!session) {
+    return;
+  }
+
   const listing = marketListings.find((item) => item.id === request.params.id);
 
   if (!listing) {
@@ -2093,10 +2937,12 @@ app.post<{
     return reply.code(409).send({ error: "Listing is no longer active" });
   }
 
-  const buyerWallet = String(request.body?.buyerWallet || "").trim();
-  if (!buyerWallet) {
-    return reply.code(400).send({ error: "buyerWallet is required" });
+  const requestedBuyerWallet = String(request.body?.buyerWallet || "").trim();
+  if (requestedBuyerWallet && requestedBuyerWallet !== session.wallet) {
+    return reply.code(403).send({ error: "buyerWallet must match authenticated wallet" });
   }
+
+  const buyerWallet = session.wallet;
 
   if (buyerWallet === listing.sellerWallet) {
     return reply.code(400).send({ error: "Seller cannot buy own listing" });
@@ -2133,15 +2979,25 @@ app.post<{
     note?: string;
   };
 }>("/api/market/barters", async (request, reply) => {
+  const session = requireWalletAuthSession(request, reply);
+  if (!session) {
+    return;
+  }
+
   const { fromWallet, offerItem, wantItem, extraUsd = 0, note } = request.body || {};
 
   if (!fromWallet || !offerItem || !wantItem) {
     return reply.code(400).send({ error: "Missing required barter fields" });
   }
 
+  const requestedFromWallet = String(fromWallet).trim();
+  if (requestedFromWallet && requestedFromWallet !== session.wallet) {
+    return reply.code(403).send({ error: "fromWallet must match authenticated wallet" });
+  }
+
   const offer: BarterOffer = {
     id: createId("bar"),
-    fromWallet: String(fromWallet).trim(),
+    fromWallet: session.wallet,
     offerItem: String(offerItem).trim(),
     wantItem: String(wantItem).trim(),
     extraUsd: Number(extraUsd || 0),
@@ -2161,6 +3017,11 @@ app.post<{
     action?: "accept" | "decline";
   };
 }>("/api/market/barters/:id/respond", async (request, reply) => {
+  const session = requireWalletAuthSession(request, reply);
+  if (!session) {
+    return;
+  }
+
   const offer = barterOffers.find((item) => item.id === request.params.id);
 
   if (!offer) {
@@ -2171,14 +3032,18 @@ app.post<{
     return reply.code(409).send({ error: "Offer is no longer open" });
   }
 
-  const responderWallet = String(request.body?.responderWallet || "").trim();
+  const requestedResponderWallet = String(request.body?.responderWallet || "").trim();
   const action = request.body?.action;
 
-  if (!responderWallet || (action !== "accept" && action !== "decline")) {
-    return reply.code(400).send({ error: "responderWallet and valid action are required" });
+  if (action !== "accept" && action !== "decline") {
+    return reply.code(400).send({ error: "A valid action is required" });
   }
 
-  offer.responderWallet = responderWallet;
+  if (requestedResponderWallet && requestedResponderWallet !== session.wallet) {
+    return reply.code(403).send({ error: "responderWallet must match authenticated wallet" });
+  }
+
+  offer.responderWallet = session.wallet;
   offer.status = action === "accept" ? "accepted" : "declined";
 
   return {
@@ -2187,8 +3052,217 @@ app.post<{
   };
 });
 
+app.get<{
+  Querystring: {
+    role?: string;
+    profile?: string;
+  };
+}>("/api/bridge/config", async (request) => {
+  const role = resolveBridgeRole(request.query.role);
+  const profile = resolveBridgeProfile(request.query.profile);
+
+  return {
+    generatedAt: new Date().toISOString(),
+    role,
+    activeProfile: profile,
+    profileRules: BRIDGE_PROFILES[profile],
+    availableProfiles: Object.entries(BRIDGE_PROFILES).map(([key, value]) => ({
+      key,
+      label: value.label,
+      description: value.description,
+    })),
+    capabilities: BRIDGE_ROLE_CAPABILITIES[role],
+    mapPresets: ["Tactical", "Logistics", "Economy", "Threat", "Command"],
+  };
+});
+
+app.get<{ Params: { role: string } }>("/api/bridge/capabilities/:role", async (request) => {
+  const role = resolveBridgeRole(request.params.role);
+  return {
+    role,
+    capabilities: BRIDGE_ROLE_CAPABILITIES[role],
+  };
+});
+
+app.get<{
+  Querystring: {
+    role?: string;
+    level?: BridgeAlertLevel | "all";
+    limit?: number;
+  };
+}>("/api/bridge/alerts", async (request) => {
+  const role = resolveBridgeRole(request.query.role);
+  const level = request.query.level || "all";
+  const limit = clamp(Number(request.query.limit || 20), 1, 100);
+
+  const items = bridgeAlertsStore
+    .filter((item) => item.targetRoles.includes(role))
+    .filter((item) => (level === "all" ? true : item.level === level))
+    .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
+    .slice(0, limit)
+    .map((item) => ({
+      ...item,
+      acknowledged: item.acknowledgedBy.some((entry) => entry.role === role),
+    }));
+
+  return {
+    generatedAt: new Date().toISOString(),
+    role,
+    items,
+  };
+});
+
+app.get<{
+  Querystring: {
+    role?: string;
+    limit?: number;
+  };
+}>("/api/bridge/audit", async (request) => {
+  const role = resolveBridgeRole(request.query.role);
+  const limit = clamp(Number(request.query.limit || 20), 1, 100);
+
+  const items = bridgeAuditStore
+    .filter((item) => item.role === role)
+    .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
+    .slice(0, limit);
+
+  return {
+    generatedAt: new Date().toISOString(),
+    role,
+    items,
+  };
+});
+
+app.post<{
+  Params: { id: string };
+  Body: {
+    role?: string;
+    profile?: string;
+    actorWallet?: string;
+  };
+}>("/api/bridge/alerts/:id/ack", async (request, reply) => {
+  const role = resolveBridgeRole(request.body?.role);
+  const profile = resolveBridgeProfile(request.body?.profile);
+  const alert = bridgeAlertsStore.find((item) => item.id === request.params.id);
+
+  if (!alert) {
+    return reply.code(404).send({ error: "Alert not found" });
+  }
+
+  const alreadyAcked = alert.acknowledgedBy.some((item) => item.role === role);
+  if (!alreadyAcked) {
+    const ackTime = new Date().toISOString();
+    alert.acknowledgedBy.push({
+      role,
+      actorWallet: request.body?.actorWallet ? String(request.body.actorWallet).trim() : undefined,
+      time: ackTime,
+    });
+
+    await appendBridgeAuditEvent({
+      id: `audit-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+      eventType: "alert-ack",
+      role,
+      profile,
+      actorWallet: request.body?.actorWallet ? String(request.body.actorWallet).trim() : undefined,
+      details: {
+        alertId: alert.id,
+        level: alert.level,
+        domain: alert.domain,
+        title: alert.title,
+      },
+      createdAt: ackTime,
+    });
+  }
+
+  return {
+    success: true,
+    alertId: alert.id,
+    role,
+    acknowledged: true,
+    acknowledgedBy: alert.acknowledgedBy,
+  };
+});
+
+app.post<{
+  Body: {
+    role?: string;
+    profile?: string;
+    operationType?: BridgeOperationType;
+    operationValueUsd?: number;
+    routeComplexity?: number;
+    riskTolerance?: BridgeRiskTolerance;
+  };
+}>("/api/bridge/preflight", async (request, reply) => {
+  const role = resolveBridgeRole(request.body?.role);
+  const profile = resolveBridgeProfile(request.body?.profile);
+  const operationType = request.body?.operationType;
+  const riskTolerance = request.body?.riskTolerance || "medium";
+  const operationValueUsd = Number(request.body?.operationValueUsd || 0);
+  const routeComplexity = Number(request.body?.routeComplexity || 3);
+
+  const supportedOperations: BridgeOperationType[] = [
+    "fleet-dispatch",
+    "logistics-route",
+    "recon",
+    "market-order",
+    "repair",
+  ];
+
+  if (!operationType || !supportedOperations.includes(operationType)) {
+    return reply.code(400).send({
+      error: "operationType is required",
+      supportedOperations,
+    });
+  }
+
+  if (!["low", "medium", "high"].includes(riskTolerance)) {
+    return reply.code(400).send({
+      error: "riskTolerance must be low|medium|high",
+    });
+  }
+
+  if (!Number.isFinite(operationValueUsd) || operationValueUsd <= 0) {
+    return reply.code(400).send({
+      error: "operationValueUsd must be > 0",
+    });
+  }
+
+  const preflight = runBridgePreflight({
+    role,
+    profile,
+    operationType,
+    operationValueUsd,
+    routeComplexity,
+    riskTolerance,
+  });
+
+  await appendBridgeAuditEvent({
+    id: `audit-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+    eventType: "preflight-run",
+    role,
+    profile,
+    details: {
+      operationType,
+      operationValueUsd,
+      routeComplexity,
+      riskTolerance,
+      riskScore: preflight.riskScore,
+      successProbability: preflight.successProbability,
+      expectedPnlUsd: preflight.expectedPnlUsd,
+    },
+    createdAt: new Date().toISOString(),
+  });
+
+  return {
+    success: true,
+    ...preflight,
+  };
+});
+
 const start = async () => {
   try {
+    bridgeAuditStore = await readBridgeAuditEvents();
+    walletAuthUsersStore = await readWalletAuthUsers();
     await app.listen({ port: PORT, host: HOST });
     app.log.info(`Star Atlas API started at http://${HOST}:${PORT}`);
     void syncNewsArchiveIfNeeded();
