@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import type { FormEvent } from "react";
 import { useConnection, useWallet } from "@solana/wallet-adapter-react";
 import { WalletMultiButton } from "@solana/wallet-adapter-react-ui";
@@ -247,6 +247,23 @@ type BridgeLiveMapResponse = {
   connectedWalletMetrics?: BridgeConnectedWalletMetrics;
   sagePlayersMetric?: BridgeSagePlayersMetric;
   sageActiveProfilesMetric?: BridgeSageActiveProfilesMetric;
+};
+
+type MiningResourceData = {
+  resource: string;
+  totalFleets: number;
+  byFaction: {
+    MUD: number;
+    ONI: number;
+    USTUR: number;
+  };
+  updatedAt: string;
+};
+
+type BridgeMiningMetrics = {
+  resources: MiningResourceData[];
+  resetAt: string;
+  updatedAt: string;
 };
 
 type BridgeCapabilities = {
@@ -602,7 +619,7 @@ function App() {
   const [archiveData, setArchiveData] = useState<NewsArchiveResponse | null>(null);
   const [archiveLoading, setArchiveLoading] = useState(false);
   const [archiveError, setArchiveError] = useState<string | null>(null);
-  const [miningMetrics, setMiningMetrics] = useState<any | null>(null);
+  const [miningMetrics, setMiningMetrics] = useState<BridgeMiningMetrics | null>(null);
   const [miningLoading, setMiningLoading] = useState(false);
   const [miningError, setMiningError] = useState<string | null>(null);
   const [bridgeRole, setBridgeRole] = useState<BridgeRole>("Captain");
@@ -656,6 +673,7 @@ function App() {
   const [bridgeAccessWalletInput, setBridgeAccessWalletInput] = useState("");
   const [bridgeAccessBusy, setBridgeAccessBusy] = useState(false);
   const [bridgeAccessMessage, setBridgeAccessMessage] = useState<string | null>(null);
+  const [bridgeAuditReferenceNow, setBridgeAuditReferenceNow] = useState(() => Date.now());
 
   const isWalletSessionBound = Boolean(
     connected &&
@@ -667,7 +685,6 @@ function App() {
   const bridgeAccessActive = hasBridgeAccess && (isWalletSessionBound || isAdminSession);
 
   const bridgeFilteredAuditData = useMemo(() => {
-    const now = Date.now();
     const periodMsMap: Record<BridgeAuditPeriod, number> = {
       "24h": 24 * 60 * 60 * 1000,
       "7d": 7 * 24 * 60 * 60 * 1000,
@@ -691,8 +708,12 @@ function App() {
         return false;
       }
 
-      return now - createdAtMs <= maxAgeMs;
+      return bridgeAuditReferenceNow - createdAtMs <= maxAgeMs;
     });
+  }, [bridgeAuditData, bridgeAuditPeriodFilter, bridgeAuditReferenceNow, bridgeAuditTypeFilter]);
+
+  useEffect(() => {
+    setBridgeAuditReferenceNow(Date.now());
   }, [bridgeAuditData, bridgeAuditPeriodFilter, bridgeAuditTypeFilter]);
 
   const exportBridgeAudit = (format: "json" | "csv") => {
@@ -862,7 +883,7 @@ function App() {
     }
   };
 
-  const loadBridgeAccessList = async (token: string) => {
+  const loadBridgeAccessList = useCallback(async (token: string) => {
     if (!token || !walletAuthUser?.isAdmin) return;
 
     try {
@@ -878,7 +899,7 @@ function App() {
     } catch (error) {
       setBridgeAccessMessage(`Не удалось загрузить доступы Bridge: ${getErrorMessage(error)}`);
     }
-  };
+  }, [walletAuthUser?.isAdmin]);
 
   const grantBridgeAccess = async () => {
     if (!walletAuthToken || !walletAuthUser?.isAdmin) {
@@ -1246,7 +1267,7 @@ function App() {
     }
   };
 
-  const loadListings = async () => {
+  const loadListings = useCallback(async () => {
     setListingsBusy(true);
     setListingsMessage(null);
 
@@ -1268,7 +1289,7 @@ function App() {
     } finally {
       setListingsBusy(false);
     }
-  };
+  }, [listingsClass, listingsSearch, listingsStatus]);
 
   const loadSellPickerNfts = async (token: string) => {
     setSellPickerLoading(true);
@@ -1507,7 +1528,7 @@ function App() {
     }
   };
 
-  const loadBarters = async () => {
+  const loadBarters = useCallback(async () => {
     setBartersBusy(true);
     setBartersMessage(null);
 
@@ -1522,7 +1543,7 @@ function App() {
     } finally {
       setBartersBusy(false);
     }
-  };
+  }, [bartersStatus]);
 
   const createBarter = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -1707,7 +1728,7 @@ function App() {
     setMiningError(null);
 
     try {
-      const payload = await apiRequest<any>("/api/bridge/resources");
+      const payload = await apiRequest<BridgeMiningMetrics>("/api/bridge/resources");
       setMiningMetrics(payload);
     } catch (requestError) {
       setMiningError("Не удалось загрузить метрики добычи.");
@@ -1717,7 +1738,7 @@ function App() {
     }
   };
 
-  const loadBridgeRuntime = async (
+  const loadBridgeRuntime = useCallback(async (
     role: BridgeRole = bridgeRole,
     profile: BridgeC4Profile = bridgeProfile,
   ) => {
@@ -1768,9 +1789,9 @@ function App() {
     } finally {
       setBridgeLoading(false);
     }
-  };
+  }, [bridgeProfile, bridgeRole, walletAuthToken]);
 
-  const loadBridgeLiveMap = async (
+  const loadBridgeLiveMap = useCallback(async (
     role: BridgeRole = bridgeRole,
     profile: BridgeC4Profile = bridgeProfile,
     quiet = false,
@@ -1799,7 +1820,7 @@ function App() {
         setBridgeLiveMapLoading(false);
       }
     }
-  };
+  }, [bridgeProfile, bridgeRole, walletAuthToken]);
 
   const runBridgePreflight = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -1925,7 +1946,7 @@ function App() {
     if (activeTab === "market" && marketSection === "trade") {
       void loadListings();
     }
-  }, [activeTab, marketSection, listingsClass, listingsSearch, listingsStatus]);
+  }, [activeTab, loadListings, marketSection]);
 
   useEffect(() => {
     if (activeTab === "market" && marketSection === "trade" && !marketConfig) {
@@ -1943,7 +1964,7 @@ function App() {
     if (activeTab === "market" && marketSection === "barter") {
       void loadBarters();
     }
-  }, [activeTab, marketSection, bartersStatus]);
+  }, [activeTab, loadBarters, marketSection]);
 
   useEffect(() => {
     if ((activeTab === "news" || activeTab === "intel") && !intelData && !intelLoading) {
@@ -1967,7 +1988,7 @@ function App() {
     if (activeTab === "bridge" && !bridgeConfig && !bridgeLoading) {
       void loadBridgeRuntime();
     }
-  }, [activeTab, bridgeConfig, bridgeLoading, bridgeAccessActive]);
+  }, [activeTab, bridgeAccessActive, bridgeConfig, bridgeLoading, loadBridgeRuntime]);
 
   useEffect(() => {
     if (activeTab !== "bridge" || !bridgeAccessActive || !walletAuthToken) {
@@ -1982,7 +2003,7 @@ function App() {
     return () => {
       window.clearInterval(intervalId);
     };
-  }, [activeTab, bridgeAccessActive, walletAuthToken, bridgeRole, bridgeProfile]);
+  }, [activeTab, bridgeAccessActive, bridgeProfile, bridgeRole, loadBridgeLiveMap, walletAuthToken]);
 
   useEffect(() => {
     if (
@@ -1993,7 +2014,7 @@ function App() {
     ) {
       void loadBridgeAccessList(walletAuthToken);
     }
-  }, [activeTab, marketSection, walletAuthToken, walletAuthUser?.isAdmin]);
+  }, [activeTab, loadBridgeAccessList, marketSection, walletAuthToken, walletAuthUser?.isAdmin]);
 
   const sourceLabel: Record<IntelSourceKey, string> = {
     official: "Official",
@@ -2002,43 +2023,51 @@ function App() {
     discord: "Discord",
   };
 
-  const bridgeMapPresets: Array<{
+  const bridgeMapPresets = useMemo<Array<{
     name: BridgeMapPresetKey;
     payload: string;
     layers: BridgeMapLayers;
-  }> = [
-    {
-      name: "Tactical",
-      payload: "Флоты ДАК, враги, риск-зоны, hot-ивенты 5-15с",
-      layers: { fleets: true, enemies: true, resources: false, routes: true, riskZones: true },
-    },
-    {
-      name: "Logistics",
-      payload: "Маршруты, груз, ETA, bottleneck и ресурсы в пути",
-      layers: { fleets: true, enemies: false, resources: true, routes: true, riskZones: true },
-    },
-    {
-      name: "Economy",
-      payload: "NAV, спреды, burn rate, маржа крафта vs market",
-      layers: { fleets: false, enemies: false, resources: true, routes: false, riskZones: true },
-    },
-    {
-      name: "Threat",
-      payload: "Вражеские контакты, аномалии, риск-зоны и периметр безопасности",
-      layers: { fleets: true, enemies: true, resources: false, routes: false, riskZones: true },
-    },
-    {
-      name: "Command",
-      payload: "Сводка командования: все ключевые слои на одной карте",
-      layers: { fleets: true, enemies: true, resources: true, routes: true, riskZones: true },
-    },
-  ];
+  }>>(
+    () => [
+      {
+        name: "Tactical",
+        payload: "Флоты ДАК, враги, риск-зоны, hot-ивенты 5-15с",
+        layers: { fleets: true, enemies: true, resources: false, routes: true, riskZones: true },
+      },
+      {
+        name: "Logistics",
+        payload: "Маршруты, груз, ETA, bottleneck и ресурсы в пути",
+        layers: { fleets: true, enemies: false, resources: true, routes: true, riskZones: true },
+      },
+      {
+        name: "Economy",
+        payload: "NAV, спреды, burn rate, маржа крафта vs market",
+        layers: { fleets: false, enemies: false, resources: true, routes: false, riskZones: true },
+      },
+      {
+        name: "Threat",
+        payload: "Вражеские контакты, аномалии, риск-зоны и периметр безопасности",
+        layers: { fleets: true, enemies: true, resources: false, routes: false, riskZones: true },
+      },
+      {
+        name: "Command",
+        payload: "Сводка командования: все ключевые слои на одной карте",
+        layers: { fleets: true, enemies: true, resources: true, routes: true, riskZones: true },
+      },
+    ],
+    [],
+  );
 
-  const bridgeMapPresetByName = new Map(bridgeMapPresets.map((preset) => [preset.name, preset]));
-  const bridgeVisiblePresetNames =
-    ((bridgeConfig?.capabilities.visiblePresets || []) as BridgeMapPresetKey[]).length
-      ? ((bridgeConfig?.capabilities.visiblePresets || []) as BridgeMapPresetKey[])
+  const bridgeMapPresetByName = useMemo(
+    () => new Map(bridgeMapPresets.map((preset) => [preset.name, preset])),
+    [bridgeMapPresets],
+  );
+  const bridgeVisiblePresetNames = useMemo(() => {
+    const visiblePresets = bridgeConfig?.capabilities.visiblePresets as BridgeMapPresetKey[] | undefined;
+    return visiblePresets?.length
+      ? visiblePresets
       : bridgeMapPresets.map((preset) => preset.name);
+  }, [bridgeConfig?.capabilities.visiblePresets, bridgeMapPresets]);
   const bridgePresetSummary =
     bridgeMapPresetByName.get(bridgeMapPreset)?.payload ||
     "Выбери пресет, чтобы быстро настроить слои под задачу роли.";
@@ -4022,7 +4051,7 @@ function App() {
                       </tr>
                     </thead>
                     <tbody>
-                      {miningMetrics.resources.map((resource: any, idx: number) => (
+                      {miningMetrics.resources.map((resource, idx: number) => (
                         <tr key={idx}>
                           <td className="resource-name">{resource.resource}</td>
                           <td className="resource-total">
