@@ -49,6 +49,9 @@ type MarketListing = {
   mint?: string;
   image?: string;
   txSignature?: string;
+  escrowTxSignature?: string;
+  escrowWallet?: string;
+  escrowedAt?: string;
   createdAt: string;
 };
 
@@ -972,6 +975,11 @@ function App() {
       return;
     }
 
+    if (!connected || !publicKey || !signTransaction) {
+      setListingsMessage("Подключи кошелек, который выставляет NFT, и подпиши транзакцию.");
+      return;
+    }
+
     const sellerWallet = marketWallet.trim();
     if (!sellerWallet) {
       setListingsMessage("Сначала укажи кошелек в разделе Market.");
@@ -980,6 +988,11 @@ function App() {
 
     if (!isLikelySolanaAddress(sellerWallet)) {
       setListingsMessage("Некорректный адрес кошелька для продажи.");
+      return;
+    }
+
+    if (sellerWallet !== publicKey.toBase58()) {
+      setListingsMessage("Для escrow нужно, чтобы подключенный кошелек совпадал с кошельком продавца.");
       return;
     }
 
@@ -995,6 +1008,31 @@ function App() {
     }
 
     try {
+      setListingsMessage("Переводим NFT в escrow кошелек рынка...");
+
+      const mintPubkey = new PublicKey(sellPickerSelected.mint);
+      const escrowOwner = new PublicKey(
+        marketConfig?.platformFeeWallet ?? "YQmg9nTsvVLUgtj35pY8WUPRVGHaz7KfmaCgPuS6bwY",
+      );
+      const sellerAta = getAta(mintPubkey, publicKey);
+      const escrowAta = getAta(mintPubkey, escrowOwner);
+
+      const escrowTx = new Transaction();
+      escrowTx.add(createAtaIdempotentInstruction(publicKey, escrowAta, escrowOwner, mintPubkey));
+      escrowTx.add(splTransferInstruction(sellerAta, escrowAta, publicKey, 1n));
+      escrowTx.feePayer = publicKey;
+
+      const { blockhash } = await connection.getLatestBlockhash("confirmed");
+      escrowTx.recentBlockhash = blockhash;
+
+      const signedEscrowTx = await signTransaction(escrowTx);
+      const escrowSignature = await connection.sendRawTransaction(signedEscrowTx.serialize(), {
+        skipPreflight: false,
+      });
+      await connection.confirmTransaction(escrowSignature, "confirmed");
+
+      setListingsMessage("Escrow подтвержден. Создаем листинг...");
+
       await apiRequest<MarketListing>("/api/market/listings", {
         method: "POST",
         headers: {
@@ -1011,6 +1049,7 @@ function App() {
           note: newListing.note.trim(),
           mint: sellPickerSelected.mint,
           image: sellPickerSelected.image ?? undefined,
+          escrowTxSignature: escrowSignature,
         }),
       });
 
@@ -1023,8 +1062,9 @@ function App() {
         note: "",
       });
       setSellPickerSelected(null);
-      setListingsMessage("NFT выставлен на рынок.");
+      setListingsMessage("NFT переведен в escrow и выставлен на рынок.");
       await loadListings();
+      await loadSellPickerNfts(walletAuthToken);
     } catch (createError) {
       setListingsMessage("Ошибка создания листинга.");
       console.error(createError);
@@ -2495,8 +2535,14 @@ function App() {
                     <div className="market-listing-body">
                       <h4>{listing.itemName}</h4>
                       <p className="market-listing-meta">{listing.itemClass} · {listing.status}</p>
+                      <p className="market-listing-escrow">
+                        Escrow: {listing.escrowTxSignature ? "On-chain" : "Not confirmed"}
+                      </p>
                       <p className="market-listing-price">{listing.priceUsd.toLocaleString("ru-RU", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USDC</p>
                       <p className="market-listing-wallet">Продавец: {listing.sellerWallet.slice(0, 4)}...{listing.sellerWallet.slice(-4)}</p>
+                      {listing.escrowTxSignature ? (
+                        <a href={`https://solscan.io/tx/${listing.escrowTxSignature}`} target="_blank" rel="noreferrer">Escrow Tx в Solscan</a>
+                      ) : null}
                       {listing.status === "sold" && listing.txSignature ? (
                         <a href={`https://solscan.io/tx/${listing.txSignature}`} target="_blank" rel="noreferrer">Tx в Solscan</a>
                       ) : null}

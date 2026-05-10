@@ -380,6 +380,12 @@ th {
   font-size: 13px;
 }
 
+.market-listing-escrow {
+  margin: 0;
+  font-size: 12px;
+  color: #7fe7d8;
+}
+
 .market-listing-price {
   margin: 0;
   font-weight: 700;

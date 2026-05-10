@@ -210,6 +210,9 @@ type MarketListing = {
   mint?: string;
   image?: string;
   txSignature?: string;
+  escrowTxSignature?: string;
+  escrowWallet?: string;
+  escrowedAt?: string;
   createdAt: string;
 };
 
@@ -2892,6 +2895,7 @@ app.post<{
     note?: string;
     mint?: string;
     image?: string;
+    escrowTxSignature?: string;
   };
 }>("/api/market/listings", async (request, reply) => {
   const session = requireWalletAuthSession(request, reply);
@@ -2899,11 +2903,21 @@ app.post<{
     return;
   }
 
-  const { itemName, itemClass, quantity, priceUsd, paymentToken, sellerWallet, note, mint, image } =
+  const { itemName, itemClass, quantity, priceUsd, paymentToken, sellerWallet, note, mint, image, escrowTxSignature } =
     request.body || {};
 
   if (!itemName || !itemClass || !quantity || !priceUsd || !sellerWallet) {
     return reply.code(400).send({ error: "Missing required listing fields" });
+  }
+
+  const normalizedMint = String(mint || "").trim();
+  if (!normalizedMint) {
+    return reply.code(400).send({ error: "mint is required for listing" });
+  }
+
+  const normalizedEscrowTx = String(escrowTxSignature || "").trim();
+  if (!normalizedEscrowTx) {
+    return reply.code(400).send({ error: "escrowTxSignature is required" });
   }
 
   const requestedSellerWallet = String(sellerWallet).trim();
@@ -2924,8 +2938,11 @@ app.post<{
     createdAt: new Date().toISOString(),
   };
 
-  if (mint) listing.mint = String(mint).trim();
+  listing.mint = normalizedMint;
   if (image) listing.image = String(image).trim();
+  listing.escrowTxSignature = normalizedEscrowTx;
+  listing.escrowWallet = PLATFORM_FEE_WALLET;
+  listing.escrowedAt = new Date().toISOString();
 
   marketListings.unshift(listing);
   return reply.code(201).send(listing);
@@ -2948,6 +2965,10 @@ app.post<{
 
   if (listing.status !== "active") {
     return reply.code(409).send({ error: "Listing is no longer active" });
+  }
+
+  if (!listing.escrowTxSignature) {
+    return reply.code(409).send({ error: "Listing is not escrowed" });
   }
 
   const requestedBuyerWallet = String(request.body?.buyerWallet || "").trim();
