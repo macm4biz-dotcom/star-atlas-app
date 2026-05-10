@@ -423,6 +423,71 @@ type BridgeAccessListResponse = {
   entries: BridgeAccessEntry[];
 };
 
+type CraftCatalogGroup = "compound-material" | "component";
+
+type CraftCatalogItem = {
+  name: string;
+  group: CraftCatalogGroup;
+  tier: string | null;
+  verified: boolean;
+  recipeDraft: string;
+  output: string;
+  status: string;
+};
+
+type BridgeCraftCatalogResponse = {
+  source: string;
+  verifiedAt: string | null;
+  updatedAt: string;
+  items: CraftCatalogItem[];
+};
+
+type CraftReferenceCategory = {
+  key: CraftCatalogGroup;
+  title: string;
+  items: CraftCatalogItem[];
+};
+
+const LOCAL_CRAFT_REFERENCE_ITEMS: CraftCatalogItem[] = [
+  { name: "Aerogel", group: "compound-material", tier: null, verified: false, recipeDraft: "-", output: "1x", status: "Справочник" },
+  { name: "Crystal Lattice", group: "compound-material", tier: null, verified: false, recipeDraft: "-", output: "1x", status: "Справочник" },
+  { name: "Copper Wire", group: "compound-material", tier: null, verified: false, recipeDraft: "-", output: "1x", status: "Справочник" },
+  { name: "Copper", group: "compound-material", tier: null, verified: false, recipeDraft: "-", output: "1x", status: "Справочник" },
+  { name: "Electronics", group: "compound-material", tier: null, verified: false, recipeDraft: "-", output: "1x", status: "Справочник" },
+  { name: "Graphene", group: "compound-material", tier: null, verified: false, recipeDraft: "-", output: "1x", status: "Справочник" },
+  { name: "Hydrocarbon", group: "compound-material", tier: null, verified: false, recipeDraft: "-", output: "1x", status: "Справочник" },
+  { name: "Iron", group: "compound-material", tier: null, verified: false, recipeDraft: "-", output: "1x", status: "Справочник" },
+  { name: "Magnet", group: "compound-material", tier: null, verified: false, recipeDraft: "-", output: "1x", status: "Справочник" },
+  { name: "Polymer", group: "compound-material", tier: null, verified: false, recipeDraft: "-", output: "1x", status: "Справочник" },
+  { name: "Steel", group: "compound-material", tier: null, verified: false, recipeDraft: "-", output: "1x", status: "Справочник" },
+  { name: "Titanium", group: "compound-material", tier: null, verified: false, recipeDraft: "-", output: "1x", status: "Справочник" },
+  { name: "Energy Substrate", group: "component", tier: null, verified: false, recipeDraft: "Polymer + Electronics + Copper Wire", output: "1x", status: "Приоритет" },
+  { name: "Electromagnet", group: "component", tier: null, verified: false, recipeDraft: "Copper Wire + Magnet + Iron", output: "1x", status: "Приоритет" },
+  { name: "Framework", group: "component", tier: null, verified: false, recipeDraft: "Steel + Titanium + Polymer", output: "1x", status: "Приоритет" },
+  { name: "Field Stabilizer", group: "component", tier: null, verified: false, recipeDraft: "Crystal Lattice + Graphene + Magnet", output: "1x", status: "Приоритет" },
+  { name: "Particle Accelerator", group: "component", tier: null, verified: false, recipeDraft: "Super Conductor + Power Source + Framework", output: "1x", status: "Приоритет" },
+  { name: "Power Source", group: "component", tier: null, verified: false, recipeDraft: "Hydrocarbon + Copper Wire + Electronics", output: "1x", status: "Приоритет" },
+  { name: "Radiation Absorber", group: "component", tier: null, verified: false, recipeDraft: "Aerogel + Polymer + Titanium", output: "1x", status: "Приоритет" },
+  { name: "Strange Emitter", group: "component", tier: null, verified: false, recipeDraft: "Crystal Lattice + Graphene + Power Source", output: "1x", status: "Приоритет" },
+  { name: "Super Conductor", group: "component", tier: null, verified: false, recipeDraft: "Graphene + Copper Wire + Electronics", output: "1x", status: "Приоритет" },
+];
+
+function buildCraftReferenceCategories(items: CraftCatalogItem[]): CraftReferenceCategory[] {
+  const groups: CraftReferenceCategory[] = [
+    { key: "compound-material", title: "Compound Material", items: [] },
+    { key: "component", title: "Component", items: [] },
+  ];
+
+  for (const item of items) {
+    const target = groups.find((group) => group.key === item.group);
+    if (target) {
+      target.items.push(item);
+    }
+  }
+
+  return groups;
+}
+
 function parseListInput(input: string) {
   return Array.from(
     new Set(
@@ -634,6 +699,9 @@ function App() {
   const [miningMetrics, setMiningMetrics] = useState<BridgeMiningMetrics | null>(null);
   const [miningLoading, setMiningLoading] = useState(false);
   const [miningError, setMiningError] = useState<string | null>(null);
+  const [craftCatalog, setCraftCatalog] = useState<BridgeCraftCatalogResponse | null>(null);
+  const [craftCatalogLoading, setCraftCatalogLoading] = useState(false);
+  const [craftCatalogError, setCraftCatalogError] = useState<string | null>(null);
   const [bridgeRole, setBridgeRole] = useState<BridgeRole>("Captain");
   const [bridgeProfile, setBridgeProfile] = useState<BridgeC4Profile>("c4-transition");
   const [bridgeConfig, setBridgeConfig] = useState<BridgeConfig | null>(null);
@@ -695,6 +763,29 @@ function App() {
   );
   const isAdminSession = Boolean(walletAuthToken && walletAuthUser?.isAdmin);
   const bridgeAccessActive = hasBridgeAccess && (isWalletSessionBound || isAdminSession);
+
+  const craftCatalogItems = useMemo(
+    () => (craftCatalog?.items?.length ? craftCatalog.items : LOCAL_CRAFT_REFERENCE_ITEMS),
+    [craftCatalog],
+  );
+
+  const craftReferenceCategories = useMemo(
+    () => buildCraftReferenceCategories(craftCatalogItems),
+    [craftCatalogItems],
+  );
+
+  const craftReferenceRows = useMemo(
+    () =>
+      craftCatalogItems.map((item) => ({
+        category: item.group === "compound-material" ? "Compound Material" : "Component",
+        item: item.name,
+        tier: item.verified ? item.tier || "-" : "",
+        recipeDraft: item.recipeDraft,
+        output: item.output,
+        status: item.status,
+      })),
+    [craftCatalogItems],
+  );
 
   const bridgeFilteredAuditData = useMemo(() => {
     const periodMsMap: Record<BridgeAuditPeriod, number> = {
@@ -1750,6 +1841,21 @@ function App() {
     }
   };
 
+  const loadCraftCatalog = async () => {
+    setCraftCatalogLoading(true);
+    setCraftCatalogError(null);
+
+    try {
+      const payload = await apiRequest<BridgeCraftCatalogResponse>("/api/bridge/craft-catalog");
+      setCraftCatalog(payload);
+    } catch (requestError) {
+      setCraftCatalogError("Не удалось загрузить каталог крафта. Используем локальный черновик.");
+      console.error(requestError);
+    } finally {
+      setCraftCatalogLoading(false);
+    }
+  };
+
   const loadBridgeRuntime = useCallback(async (
     role: BridgeRole = bridgeRole,
     profile: BridgeC4Profile = bridgeProfile,
@@ -1989,6 +2095,12 @@ function App() {
       void loadMiningMetrics();
     }
   }, [activeTab, miningMetrics, miningLoading]);
+
+  useEffect(() => {
+    if (activeTab === "resources" && !craftCatalog && !craftCatalogLoading) {
+      void loadCraftCatalog();
+    }
+  }, [activeTab, craftCatalog, craftCatalogLoading]);
 
   useEffect(() => {
     if (activeTab === "archive" && !archiveData && !archiveLoading) {
@@ -4053,6 +4165,12 @@ function App() {
               <p className="timestamp">
                 Источник: <strong>{miningMetrics.source || "unknown"}</strong>
               </p>
+              {miningMetrics.source === "rydn-fallback" ? (
+                <p className="source-warning">
+                  Данные оценочные (fallback). Для точных метрик по фракциям нужен источник
+                  <strong> sage-onchain</strong>.
+                </p>
+              ) : null}
 
               {miningMetrics.resources && miningMetrics.resources.length > 0 ? (
                 <div className="resources-table">
@@ -4119,6 +4237,67 @@ function App() {
               Нажмите «Обновить Данные», чтобы загрузить метрики добычи SAGE.
             </p>
           )}
+
+          <div className="craft-reference">
+            <h3>Крафт: Материалы И Компоненты</h3>
+            <p className="subtitle">
+              Подготовили рабочий черновик: материалы и компоненты + база под рецепты,
+              выход и экономику. Тиры показываются только для verified-записей.
+            </p>
+
+            {craftCatalog ? (
+              <p className="timestamp">
+                Каталог: <strong>{craftCatalog.source}</strong>
+                {craftCatalog.verifiedAt ? ` | verifiedAt: ${new Date(craftCatalog.verifiedAt).toLocaleString("ru-RU")}` : " | verifiedAt: pending"}
+              </p>
+            ) : null}
+            {craftCatalogError ? <p className="note">{craftCatalogError}</p> : null}
+
+            <div className="craft-reference-groups">
+              {craftReferenceCategories.map((category) => (
+                <details key={category.key} className="craft-group" open>
+                  <summary>{category.title}</summary>
+                  <ul>
+                    {category.items.map((item) => (
+                      <li key={item.name}>
+                        <span className="craft-item-dot" aria-hidden="true">•</span>
+                        <span>{item.name}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </details>
+              ))}
+            </div>
+
+            <div className="resources-table craft-table">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Категория</th>
+                    <th>Предмет</th>
+                    <th>Тир (verified)</th>
+                    <th>Рецепт (черновик)</th>
+                    <th>Выход</th>
+                    <th>Статус</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {craftReferenceRows.map((row) => (
+                    <tr key={`${row.category}-${row.item}`}>
+                      <td>{row.category}</td>
+                      <td className="resource-name">{row.item}</td>
+                      <td>{row.tier}</td>
+                      <td>{row.recipeDraft}</td>
+                      <td>{row.output}</td>
+                      <td>
+                        <span className="craft-status">{row.status}</span>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
         </section>
       ) : null}
     </main>

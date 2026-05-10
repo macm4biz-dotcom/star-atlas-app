@@ -1308,6 +1308,25 @@ type BridgeMiningMetrics = {
   source?: "sage-onchain" | "rydn-fallback" | "empty";
 };
 
+type BridgeCraftCatalogGroup = "compound-material" | "component";
+
+type BridgeCraftCatalogItem = {
+  name: string;
+  group: BridgeCraftCatalogGroup;
+  tier: string | null;
+  verified: boolean;
+  recipeDraft: string;
+  output: string;
+  status: string;
+};
+
+type BridgeCraftCatalogResponse = {
+  source: string;
+  verifiedAt: string | null;
+  updatedAt: string;
+  items: BridgeCraftCatalogItem[];
+};
+
 function isDecodedOkAccount(account: unknown): account is {
   type: "ok";
   key?: unknown;
@@ -1768,6 +1787,7 @@ async function fetchRydnMiningMetrics(): Promise<BridgeMiningMetrics> {
       resourceMap.set(resource, { total: 0, byFaction: { MUD: 0, ONI: 0, USTUR: 0 } });
     }
 
+    let unmappedFleetTotal = 0;
     for (const entry of miningArray) {
       const sectorEntry = asRecord(entry);
       if (!sectorEntry) continue;
@@ -1782,7 +1802,10 @@ async function fetchRydnMiningMetrics(): Promise<BridgeMiningMetrics> {
       const [x, y] = sectorCoords;
       const resource = getResourceForSector(x, y);
 
-      if (!resource) continue;
+      if (!resource) {
+        unmappedFleetTotal += fleetCount;
+        continue;
+      }
 
       const entryData = resourceMap.get(resource);
       if (!entryData) continue;
@@ -1807,6 +1830,20 @@ async function fetchRydnMiningMetrics(): Promise<BridgeMiningMetrics> {
       }))
       .filter((resource) => resource.totalFleets > 0)
       .sort((left, right) => right.totalFleets - left.totalFleets);
+
+    if (unmappedFleetTotal > 0) {
+      const perFaction = Math.ceil(unmappedFleetTotal / 3);
+      resources.unshift({
+        resource: "Unmapped Sectors (RYDN)",
+        totalFleets: unmappedFleetTotal,
+        byFaction: {
+          MUD: perFaction,
+          ONI: perFaction,
+          USTUR: unmappedFleetTotal - perFaction * 2,
+        },
+        updatedAt: now.toISOString(),
+      });
+    }
 
     return {
       resources,
@@ -2849,6 +2886,7 @@ const NEWS_ARCHIVE_FILE = resolve(API_ROOT_DIR, "data", "news-archive.json");
 const BRIDGE_AUDIT_FILE = resolve(API_ROOT_DIR, "data", "bridge-audit-log.json");
 const BRIDGE_ACCESS_FILE = resolve(API_ROOT_DIR, "data", "bridge-access.json");
 const WALLET_AUTH_USERS_FILE = resolve(API_ROOT_DIR, "data", "wallet-auth-users.json");
+const CRAFT_CATALOG_FILE = resolve(API_ROOT_DIR, "data", "craft-catalog.json");
 const DEFAULT_WALLET_AUTH_ADMIN_WALLETS = [
   "YQmg9nTsvVLUgtj35pY8WUPRVGHaz7KfmaCgPuS6bwY",
 ];
@@ -3657,6 +3695,80 @@ async function readWalletAuthUsers() {
     return [] as WalletAuthUser[];
   } catch {
     return [] as WalletAuthUser[];
+  }
+}
+
+async function readCraftCatalog(): Promise<BridgeCraftCatalogResponse> {
+  const nowIso = new Date().toISOString();
+
+  try {
+    const raw = await readFile(CRAFT_CATALOG_FILE, "utf-8");
+    const parsed = JSON.parse(raw) as {
+      source?: unknown;
+      verifiedAt?: unknown;
+      updatedAt?: unknown;
+      items?: unknown;
+    };
+
+    const parsedItems = Array.isArray(parsed.items) ? parsed.items : [];
+    const items: BridgeCraftCatalogItem[] = parsedItems
+      .map((item) => {
+        const record = asRecord(item);
+        if (!record) return null;
+
+        const group =
+          record.group === "compound-material" || record.group === "component"
+            ? record.group
+            : null;
+        const name = typeof record.name === "string" ? record.name.trim() : "";
+
+        if (!group || !name) {
+          return null;
+        }
+
+        return {
+          name,
+          group,
+          tier: typeof record.tier === "string" && record.tier.trim() ? record.tier.trim() : null,
+          verified: record.verified === true,
+          recipeDraft:
+            typeof record.recipeDraft === "string" && record.recipeDraft.trim()
+              ? record.recipeDraft.trim()
+              : "-",
+          output:
+            typeof record.output === "string" && record.output.trim()
+              ? record.output.trim()
+              : "1x",
+          status:
+            typeof record.status === "string" && record.status.trim()
+              ? record.status.trim()
+              : "Справочник",
+        } satisfies BridgeCraftCatalogItem;
+      })
+      .filter((item): item is BridgeCraftCatalogItem => !!item);
+
+    return {
+      source:
+        typeof parsed.source === "string" && parsed.source.trim()
+          ? parsed.source.trim()
+          : "manual-seed",
+      verifiedAt:
+        typeof parsed.verifiedAt === "string" && parsed.verifiedAt.trim()
+          ? parsed.verifiedAt.trim()
+          : null,
+      updatedAt:
+        typeof parsed.updatedAt === "string" && parsed.updatedAt.trim()
+          ? parsed.updatedAt.trim()
+          : nowIso,
+      items,
+    };
+  } catch {
+    return {
+      source: "fallback-empty",
+      verifiedAt: null,
+      updatedAt: nowIso,
+      items: [],
+    };
   }
 }
 
@@ -4949,6 +5061,12 @@ app.get<{
   reply.header("cache-control", "max-age=60");
   reply.header("x-mining-sync", "live");
   return miningMetrics;
+});
+
+app.get("/api/bridge/craft-catalog", async (request, reply) => {
+  const catalog = await readCraftCatalog();
+  reply.header("cache-control", "max-age=300");
+  return catalog;
 });
 
 app.get("/api/bridge/access/me", async (request, reply) => {

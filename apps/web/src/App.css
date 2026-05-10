@@ -1679,3 +1679,101 @@ th {
 .resources-meta .reset-info {
   margin: 0;
 }
+
+.source-warning {
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  border-left: 3px solid #ffb966;
+  border-radius: 8px;
+  background: rgba(255, 185, 102, 0.12);
+  color: rgba(255, 223, 184, 0.98);
+  font-size: 13px;
+}
+
+.source-warning strong {
+  margin-left: 4px;
+  color: #ffd9a6;
+}
+
+.craft-reference {
+  margin-top: 28px;
+  padding-top: 18px;
+  border-top: 1px solid rgba(158, 230, 255, 0.15);
+}
+
+.craft-reference h3 {
+  margin: 0 0 8px;
+  font-size: 18px;
+  color: rgba(102, 242, 222, 0.95);
+}
+
+.craft-reference .subtitle {
+  margin: 0 0 16px;
+}
+
+.craft-reference-groups {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 14px;
+  margin-bottom: 16px;
+}
+
+.craft-group {
+  border: 1px solid rgba(158, 230, 255, 0.18);
+  border-radius: 10px;
+  background: rgba(8, 19, 35, 0.45);
+  overflow: hidden;
+}
+
+.craft-group summary {
+  cursor: pointer;
+  list-style: none;
+  padding: 10px 12px;
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: rgba(219, 242, 255, 0.94);
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.craft-group ul {
+  margin: 0;
+  padding: 10px 16px 12px;
+  display: grid;
+  gap: 8px;
+}
+
+.craft-group li {
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: rgba(219, 242, 255, 0.84);
+  font-size: 14px;
+}
+
+.craft-item-dot {
+  color: rgba(102, 242, 222, 0.75);
+  width: 10px;
+  text-align: center;
+}
+
+.craft-status {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid rgba(102, 242, 222, 0.4);
+  border-radius: 999px;
+  padding: 2px 10px;
+  font-size: 12px;
+  color: rgba(102, 242, 222, 0.95);
+}
+
+.craft-table td:last-child {
+  color: rgba(219, 242, 255, 0.72);
+  font-size: 13px;
+}
+
+.craft-table th:nth-child(4),
+.craft-table td:nth-child(4) {
+  min-width: 260px;
+}

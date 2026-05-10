@@ -103,6 +103,31 @@ export const SECTOR_RESOURCE_MAP: Record<string, ResourceName> = {
   "4,-2": "Biomass",
 };
 
+const SECTOR_COORDINATES = Object.entries(SECTOR_RESOURCE_MAP).map(([key, resource]) => {
+  const [xRaw, yRaw] = key.split(",");
+  return {
+    x: Number(xRaw),
+    y: Number(yRaw),
+    resource,
+  };
+});
+
+function findNearestMappedResource(x: number, y: number): ResourceName | undefined {
+  let best: { distance: number; resource: ResourceName } | null = null;
+
+  for (const candidate of SECTOR_COORDINATES) {
+    const dx = x - candidate.x;
+    const dy = y - candidate.y;
+    const distance = dx * dx + dy * dy;
+
+    if (!best || distance < best.distance) {
+      best = { distance, resource: candidate.resource };
+    }
+  }
+
+  return best?.resource;
+}
+
 /**
  * Get resource type for a sector coordinate
  * If sector is not in map, returns a default resource or undefined
@@ -112,7 +137,22 @@ export function getResourceForSector(
   y: number
 ): ResourceName | undefined {
   const key = `${x},${y}`;
-  return SECTOR_RESOURCE_MAP[key];
+  const exact = SECTOR_RESOURCE_MAP[key];
+  if (exact) {
+    return exact;
+  }
+
+  // RYDN fallback started returning expanded map coordinates (e.g. -47,30).
+  // Normalize to the legacy 1-digit grid first, then pick nearest mapped sector.
+  const normalizedX = Math.round(x / 10);
+  const normalizedY = Math.round(y / 10);
+  const normalizedKey = `${normalizedX},${normalizedY}`;
+  const normalized = SECTOR_RESOURCE_MAP[normalizedKey];
+  if (normalized) {
+    return normalized;
+  }
+
+  return findNearestMappedResource(normalizedX, normalizedY);
 }
 
 /**

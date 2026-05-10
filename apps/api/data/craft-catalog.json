@@ -1,0 +1,196 @@
+{
+  "source": "manual-seed",
+  "verifiedAt": null,
+  "updatedAt": "2026-05-10T00:00:00.000Z",
+  "items": [
+    {
+      "name": "Aerogel",
+      "group": "compound-material",
+      "tier": null,
+      "verified": false,
+      "recipeDraft": "-",
+      "output": "1x",
+      "status": "Справочник"
+    },
+    {
+      "name": "Crystal Lattice",
+      "group": "compound-material",
+      "tier": null,
+      "verified": false,
+      "recipeDraft": "-",
+      "output": "1x",
+      "status": "Справочник"
+    },
+    {
+      "name": "Copper Wire",
+      "group": "compound-material",
+      "tier": null,
+      "verified": false,
+      "recipeDraft": "-",
+      "output": "1x",
+      "status": "Справочник"
+    },
+    {
+      "name": "Copper",
+      "group": "compound-material",
+      "tier": null,
+      "verified": false,
+      "recipeDraft": "-",
+      "output": "1x",
+      "status": "Справочник"
+    },
+    {
+      "name": "Electronics",
+      "group": "compound-material",
+      "tier": null,
+      "verified": false,
+      "recipeDraft": "-",
+      "output": "1x",
+      "status": "Справочник"
+    },
+    {
+      "name": "Graphene",
+      "group": "compound-material",
+      "tier": null,
+      "verified": false,
+      "recipeDraft": "-",
+      "output": "1x",
+      "status": "Справочник"
+    },
+    {
+      "name": "Hydrocarbon",
+      "group": "compound-material",
+      "tier": null,
+      "verified": false,
+      "recipeDraft": "-",
+      "output": "1x",
+      "status": "Справочник"
+    },
+    {
+      "name": "Iron",
+      "group": "compound-material",
+      "tier": null,
+      "verified": false,
+      "recipeDraft": "-",
+      "output": "1x",
+      "status": "Справочник"
+    },
+    {
+      "name": "Magnet",
+      "group": "compound-material",
+      "tier": null,
+      "verified": false,
+      "recipeDraft": "-",
+      "output": "1x",
+      "status": "Справочник"
+    },
+    {
+      "name": "Polymer",
+      "group": "compound-material",
+      "tier": null,
+      "verified": false,
+      "recipeDraft": "-",
+      "output": "1x",
+      "status": "Справочник"
+    },
+    {
+      "name": "Steel",
+      "group": "compound-material",
+      "tier": null,
+      "verified": false,
+      "recipeDraft": "-",
+      "output": "1x",
+      "status": "Справочник"
+    },
+    {
+      "name": "Titanium",
+      "group": "compound-material",
+      "tier": null,
+      "verified": false,
+      "recipeDraft": "-",
+      "output": "1x",
+      "status": "Справочник"
+    },
+    {
+      "name": "Energy Substrate",
+      "group": "component",
+      "tier": null,
+      "verified": false,
+      "recipeDraft": "Polymer + Electronics + Copper Wire",
+      "output": "1x",
+      "status": "Приоритет"
+    },
+    {
+      "name": "Electromagnet",
+      "group": "component",
+      "tier": null,
+      "verified": false,
+      "recipeDraft": "Copper Wire + Magnet + Iron",
+      "output": "1x",
+      "status": "Приоритет"
+    },
+    {
+      "name": "Framework",
+      "group": "component",
+      "tier": null,
+      "verified": false,
+      "recipeDraft": "Steel + Titanium + Polymer",
+      "output": "1x",
+      "status": "Приоритет"
+    },
+    {
+      "name": "Field Stabilizer",
+      "group": "component",
+      "tier": null,
+      "verified": false,
+      "recipeDraft": "Crystal Lattice + Graphene + Magnet",
+      "output": "1x",
+      "status": "Приоритет"
+    },
+    {
+      "name": "Particle Accelerator",
+      "group": "component",
+      "tier": null,
+      "verified": false,
+      "recipeDraft": "Super Conductor + Power Source + Framework",
+      "output": "1x",
+      "status": "Приоритет"
+    },
+    {
+      "name": "Power Source",
+      "group": "component",
+      "tier": null,
+      "verified": false,
+      "recipeDraft": "Hydrocarbon + Copper Wire + Electronics",
+      "output": "1x",
+      "status": "Приоритет"
+    },
+    {
+      "name": "Radiation Absorber",
+      "group": "component",
+      "tier": null,
+      "verified": false,
+      "recipeDraft": "Aerogel + Polymer + Titanium",
+      "output": "1x",
+      "status": "Приоритет"
+    },
+    {
+      "name": "Strange Emitter",
+      "group": "component",
+      "tier": null,
+      "verified": false,
+      "recipeDraft": "Crystal Lattice + Graphene + Power Source",
+      "output": "1x",
+      "status": "Приоритет"
+    },
+    {
+      "name": "Super Conductor",
+      "group": "component",
+      "tier": null,
+      "verified": false,
+      "recipeDraft": "Graphene + Copper Wire + Electronics",
+      "output": "1x",
+      "status": "Приоритет"
+    }
+  ]
+}
