@@ -1827,35 +1827,53 @@ function App() {
     }
   };
 
-  const loadMiningMetrics = async () => {
-    setMiningLoading(true);
-    setMiningError(null);
+  const loadMiningMetrics = useCallback(async (quiet = false) => {
+    if (!quiet) {
+      setMiningLoading(true);
+      setMiningError(null);
+    }
 
     try {
       const payload = await apiRequest<BridgeMiningMetrics>("/api/bridge/resources");
       setMiningMetrics(payload);
+      if (!quiet) {
+        setMiningError(null);
+      }
     } catch (requestError) {
-      setMiningError("Не удалось загрузить метрики добычи.");
+      if (!quiet) {
+        setMiningError("Не удалось загрузить метрики добычи.");
+      }
       console.error(requestError);
     } finally {
-      setMiningLoading(false);
+      if (!quiet) {
+        setMiningLoading(false);
+      }
     }
-  };
+  }, []);
 
-  const loadCraftCatalog = async () => {
-    setCraftCatalogLoading(true);
-    setCraftCatalogError(null);
+  const loadCraftCatalog = useCallback(async (quiet = false) => {
+    if (!quiet) {
+      setCraftCatalogLoading(true);
+      setCraftCatalogError(null);
+    }
 
     try {
       const payload = await apiRequest<BridgeCraftCatalogResponse>("/api/bridge/craft-catalog");
       setCraftCatalog(payload);
+      if (!quiet) {
+        setCraftCatalogError(null);
+      }
     } catch (requestError) {
-      setCraftCatalogError("Не удалось загрузить каталог крафта. Используем локальный черновик.");
+      if (!quiet) {
+        setCraftCatalogError("Не удалось загрузить каталог крафта. Используем локальный черновик.");
+      }
       console.error(requestError);
     } finally {
-      setCraftCatalogLoading(false);
+      if (!quiet) {
+        setCraftCatalogLoading(false);
+      }
     }
-  };
+  }, []);
 
   const loadBridgeRuntime = useCallback(async (
     role: BridgeRole = bridgeRole,
@@ -2095,13 +2113,32 @@ function App() {
     if (activeTab === "resources" && !miningMetrics && !miningLoading) {
       void loadMiningMetrics();
     }
-  }, [activeTab, miningMetrics, miningLoading]);
+  }, [activeTab, loadMiningMetrics, miningMetrics, miningLoading]);
 
   useEffect(() => {
     if (activeTab === "resources" && !craftCatalog && !craftCatalogLoading) {
       void loadCraftCatalog();
     }
-  }, [activeTab, craftCatalog, craftCatalogLoading]);
+  }, [activeTab, craftCatalog, craftCatalogLoading, loadCraftCatalog]);
+
+  useEffect(() => {
+    if (activeTab !== "resources") {
+      return;
+    }
+
+    const miningIntervalId = window.setInterval(() => {
+      void loadMiningMetrics(true);
+    }, 30_000);
+
+    const craftIntervalId = window.setInterval(() => {
+      void loadCraftCatalog(true);
+    }, 120_000);
+
+    return () => {
+      window.clearInterval(miningIntervalId);
+      window.clearInterval(craftIntervalId);
+    };
+  }, [activeTab, loadCraftCatalog, loadMiningMetrics]);
 
   useEffect(() => {
     if (activeTab === "archive" && !archiveData && !archiveLoading) {
