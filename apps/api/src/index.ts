@@ -4,7 +4,7 @@ import cors from "@fastify/cors";
 import { existsSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
-import { randomBytes } from "node:crypto";
+import { randomBytes, timingSafeEqual } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { config as loadEnv } from "dotenv";
 import {
@@ -20,6 +20,7 @@ import type {
   FleetAsset,
   HealthResponse,
 } from "@star-atlas/shared";
+import { SECTOR_RESOURCE_MAP, getResourceForSector, ALL_RESOURCES } from "./sector-resource-map.js";
 
 const envCandidates = [
   resolve(process.cwd(), ".env"),
@@ -486,6 +487,25 @@ type BridgeMapRiskZone = {
   updatedAt?: string;
 };
 
+type BridgeFaction = "MUD" | "ONI" | "USTUR";
+
+type BridgeConnectedWalletMetrics = {
+  totalConnectedWallets: number;
+  byFaction: Record<BridgeFaction, number>;
+};
+
+type BridgeSagePlayersMetric = {
+  online: number | null;
+  source: "upstream" | "estimated" | "unavailable";
+  updatedAt: string;
+};
+
+type BridgeSageActiveProfilesMetric = {
+  activeProfiles: number | null;
+  source: "upstream" | "estimated" | "unavailable";
+  updatedAt: string;
+};
+
 type BridgeLiveMap = {
   generatedAt: string;
   source: "upstream" | "data-intel" | "synthetic";
@@ -499,6 +519,9 @@ type BridgeLiveMap = {
   resources: BridgeMapPoint[];
   routes: BridgeMapRoute[];
   riskZones: BridgeMapRiskZone[];
+  connectedWalletMetrics: BridgeConnectedWalletMetrics;
+  sagePlayersMetric: BridgeSagePlayersMetric;
+  sageActiveProfilesMetric: BridgeSageActiveProfilesMetric;
 };
 
 type BridgeAccessEntry = {
@@ -539,6 +562,10 @@ const BRIDGE_MAP_IMAGE_URL =
 const BRIDGE_LIVE_MAP_UPSTREAM_URL = (process.env.BRIDGE_LIVE_MAP_UPSTREAM_URL || "").trim();
 const BRIDGE_DATA_INTEL_BASE_URL =
   (process.env.BRIDGE_DATA_INTEL_BASE_URL || "https://data-intel-prod.uc.r.appspot.com").trim();
+const BRIDGE_SAGE_PLAYERS_UPSTREAM_URL =
+  (process.env.BRIDGE_SAGE_PLAYERS_UPSTREAM_URL || "").trim();
+const BRIDGE_SAGE_ACTIVE_PROFILES_UPSTREAM_URL =
+  (process.env.BRIDGE_SAGE_ACTIVE_PROFILES_UPSTREAM_URL || "").trim();
 const BRIDGE_LIVE_MAP_TIMEOUT_MS = parseDurationMs(
   process.env.BRIDGE_LIVE_MAP_TIMEOUT_MS,
   7_500,
@@ -805,6 +832,269 @@ function hashedRange(seed: string, min: number, max: number) {
   return Math.round(min + (max - min) * ratio);
 }
 
+const BRIDGE_FACTIONS: BridgeFaction[] = ["MUD", "ONI", "USTUR"];
+
+function resolveBridgeFaction(wallet: string): BridgeFaction {
+  const normalized = normalizeWalletAddress(wallet);
+  if (!normalized) {
+    return "MUD";
+  }
+
+  const index = hashString(normalized) % BRIDGE_FACTIONS.length;
+  return BRIDGE_FACTIONS[index] || "MUD";
+}
+
+function buildConnectedWalletMetrics(currentWallet: string): BridgeConnectedWalletMetrics {
+  const connectedWallets = new Set<string>();
+  const normalizedCurrent = normalizeWalletAddress(currentWallet);
+  if (normalizedCurrent) {
+    connectedWallets.add(normalizedCurrent);
+  }
+
+  for (const session of walletAuthSessionStore.values()) {
+    const normalizedSessionWallet = normalizeWalletAddress(session.wallet);
+    if (!normalizedSessionWallet) {
+      continue;
+    }
+    if (!hasBridgeAccess(normalizedSessionWallet)) {
+      continue;
+    }
+    connectedWallets.add(normalizedSessionWallet);
+  }
+
+  const byFaction: Record<BridgeFaction, number> = {
+    MUD: 0,
+    ONI: 0,
+    USTUR: 0,
+  };
+
+  for (const wallet of connectedWallets.values()) {
+    const faction = resolveBridgeFaction(wallet);
+    byFaction[faction] += 1;
+  }
+
+  return {
+    totalConnectedWallets: connectedWallets.size,
+    byFaction,
+  };
+}
+
+type ParsedSagePlayersMetric = {
+  online: number | null;
+  source: BridgeSagePlayersMetric["source"];
+};
+
+type ParsedSageActiveProfilesMetric = {
+  activeProfiles: number | null;
+  source: BridgeSageActiveProfilesMetric["source"];
+};
+
+function parseSagePlayersMetricPayload(payload: unknown): ParsedSagePlayersMetric {
+  const record = asRecord(payload);
+  if (!record) {
+    return {
+      online: null,
+      source: "unavailable",
+    };
+  }
+
+  const directCandidates = [
+    record.sagePlayersOnline,
+    record.playersOnline,
+    record.onlinePlayers,
+    record.online,
+    record.activePlayers,
+    record.count,
+  ];
+
+  for (const candidate of directCandidates) {
+    const value = Number(candidate);
+    if (Number.isFinite(value) && value >= 0) {
+      return {
+        online: clamp(Math.round(value), 0, 1_000_000_000),
+        source: "upstream",
+      };
+    }
+  }
+
+  const nestedCandidates = [
+    asRecord(record.sageStats),
+    asRecord(record.metrics),
+    asRecord(record.players),
+    asRecord(record.stats),
+    asRecord(record.data),
+  ].filter(Boolean) as Array<Record<string, unknown>>;
+
+  for (const nested of nestedCandidates) {
+    const value = Number(
+      nested.sagePlayersOnline ||
+        nested.playersOnline ||
+        nested.onlinePlayers ||
+        nested.online ||
+        nested.activePlayers ||
+        nested.count,
+    );
+    if (Number.isFinite(value) && value >= 0) {
+      return {
+        online: clamp(Math.round(value), 0, 1_000_000_000),
+        source: "upstream",
+      };
+    }
+  }
+
+  // Ryden fallback: sum faction fleet counts from api_fleets_all.php payload.
+  const statsRecord = asRecord(record.stats);
+  if (statsRecord) {
+    const fleetEstimate = ["1", "2", "3"].reduce((sum, factionKey) => {
+      const factionStats = asRecord(statsRecord[factionKey]);
+      if (!factionStats) {
+        return sum;
+      }
+      const fleetCount = Number(factionStats.fleetCount);
+      if (!Number.isFinite(fleetCount) || fleetCount < 0) {
+        return sum;
+      }
+      return sum + fleetCount;
+    }, 0);
+
+    if (fleetEstimate > 0) {
+      return {
+        online: clamp(Math.round(fleetEstimate), 0, 1_000_000_000),
+        source: "estimated",
+      };
+    }
+  }
+
+  return {
+    online: null,
+    source: "unavailable",
+  };
+}
+
+async function fetchSagePlayersMetric(): Promise<BridgeSagePlayersMetric> {
+  const nowIso = new Date().toISOString();
+  if (!BRIDGE_SAGE_PLAYERS_UPSTREAM_URL) {
+    return {
+      online: null,
+      source: "unavailable",
+      updatedAt: nowIso,
+    };
+  }
+
+  const payload = await fetchJsonWithTimeout(
+    BRIDGE_SAGE_PLAYERS_UPSTREAM_URL,
+    BRIDGE_LIVE_MAP_TIMEOUT_MS,
+  );
+  const metric = parseSagePlayersMetricPayload(payload);
+  if (metric.online === null) {
+    return {
+      online: null,
+      source: "unavailable",
+      updatedAt: nowIso,
+    };
+  }
+
+  return {
+    online: metric.online,
+    source: metric.source,
+    updatedAt: nowIso,
+  };
+}
+
+function parseSageActiveProfilesMetricPayload(payload: unknown): ParsedSageActiveProfilesMetric {
+  const record = asRecord(payload);
+  if (!record) {
+    return {
+      activeProfiles: null,
+      source: "unavailable",
+    };
+  }
+
+  const directCandidates = [
+    record.sageActiveProfiles,
+    record.sageActiveProfilesToday,
+    record.activeProfiles,
+    record.activeProfilesToday,
+    record.profilesOnline,
+    record.onlineProfiles,
+    record.count,
+  ];
+
+  for (const candidate of directCandidates) {
+    const value = Number(candidate);
+    if (Number.isFinite(value) && value >= 0) {
+      return {
+        activeProfiles: clamp(Math.round(value), 0, 1_000_000_000),
+        source: "upstream",
+      };
+    }
+  }
+
+  // Ryden fallback: unique profile addresses from today leaderboard for factions 1/2/3.
+  const todayRecord = asRecord(record.today);
+  if (todayRecord) {
+    const profiles = new Set<string>();
+
+    for (const factionKey of ["1", "2", "3"]) {
+      const factionRecord = asRecord(todayRecord[factionKey]);
+      const lpList = factionRecord?.LP;
+      if (!Array.isArray(lpList)) {
+        continue;
+      }
+
+      for (const item of lpList) {
+        const row = asRecord(item);
+        const profile = typeof row?.profile === "string" ? row.profile.trim() : "";
+        if (profile) {
+          profiles.add(profile);
+        }
+      }
+    }
+
+    if (profiles.size > 0) {
+      return {
+        activeProfiles: profiles.size,
+        source: "estimated",
+      };
+    }
+  }
+
+  return {
+    activeProfiles: null,
+    source: "unavailable",
+  };
+}
+
+async function fetchSageActiveProfilesMetric(): Promise<BridgeSageActiveProfilesMetric> {
+  const nowIso = new Date().toISOString();
+  if (!BRIDGE_SAGE_ACTIVE_PROFILES_UPSTREAM_URL) {
+    return {
+      activeProfiles: null,
+      source: "unavailable",
+      updatedAt: nowIso,
+    };
+  }
+
+  const payload = await fetchJsonWithTimeout(
+    BRIDGE_SAGE_ACTIVE_PROFILES_UPSTREAM_URL,
+    BRIDGE_LIVE_MAP_TIMEOUT_MS,
+  );
+  const metric = parseSageActiveProfilesMetricPayload(payload);
+  if (metric.activeProfiles === null) {
+    return {
+      activeProfiles: null,
+      source: "unavailable",
+      updatedAt: nowIso,
+    };
+  }
+
+  return {
+    activeProfiles: metric.activeProfiles,
+    source: metric.source,
+    updatedAt: nowIso,
+  };
+}
+
 function buildBridgeUpstreamSamplePayload(params: {
   role: BridgeRole;
   profile: BridgeC4Profile;
@@ -895,6 +1185,17 @@ function buildBridgeUpstreamSamplePayload(params: {
     resources,
     routes,
     riskZones,
+    connectedWalletMetrics: buildConnectedWalletMetrics(params.wallet),
+    sagePlayersMetric: {
+      online: null,
+      source: "unavailable",
+      updatedAt: nowIso,
+    },
+    sageActiveProfilesMetric: {
+      activeProfiles: null,
+      source: "unavailable",
+      updatedAt: nowIso,
+    },
   };
 }
 
@@ -964,6 +1265,129 @@ function extractOrderSignals(payload: unknown): DataIntelOrderSignal[] {
   return signals.slice(0, 40);
 }
 
+/**
+ * Mining activity data from SAGE
+ */
+type MiningResourceData = {
+  resource: string;
+  totalFleets: number;
+  byFaction: Record<string, number>;
+  updatedAt: string;
+};
+
+type BridgeMiningMetrics = {
+  resources: MiningResourceData[];
+  resetAt: string; // UTC midnight when counters reset
+  updatedAt: string;
+};
+
+/**
+ * Fetch mining data from RYDN API and join with sector-resource mapping
+ */
+async function fetchSageMiningMetrics(): Promise<BridgeMiningMetrics> {
+  try {
+    const miningUrl = process.env.BRIDGE_SAGE_MINING_UPSTREAM_URL || 
+                      "https://api.ryden.systems/api_fleets_all.php";
+    
+    const response = await fetchJsonWithTimeout(miningUrl, 8000);
+    const data = asRecord(response);
+    
+    if (!data) {
+      return buildEmptyMiningMetrics();
+    }
+    
+    // Extract mining array: [{s: [x,y], c: fleetCount}, ...]
+    const miningArray = Array.isArray(data.mining) ? data.mining : [];
+    
+    // Extract faction stats if available
+    const statsRecord = asRecord(data.stats || {});
+    const factionStats = {
+      MUD: Number(statsRecord?.mud || statsRecord?.faction1 || 0),
+      ONI: Number(statsRecord?.oni || statsRecord?.faction2 || 0),
+      USTUR: Number(statsRecord?.ustur || statsRecord?.faction3 || 0),
+    };
+    
+    // Aggregate mining data by resource
+    const resourceMap = new Map<string, { total: number; byFaction: Record<string, number> }>();
+    
+    // Initialize all resources
+    for (const resource of ALL_RESOURCES) {
+      resourceMap.set(resource, { total: 0, byFaction: { MUD: 0, ONI: 0, USTUR: 0 } });
+    }
+    
+    // Process mining sectors
+    for (const entry of miningArray) {
+      const sectorEntry = asRecord(entry);
+      if (!sectorEntry) continue;
+      
+      const sectorCoords = Array.isArray(sectorEntry.s) && sectorEntry.s.length === 2
+        ? sectorEntry.s
+        : null;
+      const fleetCount = Number(sectorEntry.c || 0);
+      
+      if (!sectorCoords || fleetCount <= 0) continue;
+      
+      const [x, y] = sectorCoords;
+      const resource = getResourceForSector(x, y);
+      
+      if (!resource) continue;
+      
+      const entry_data = resourceMap.get(resource);
+      if (!entry_data) continue;
+      
+      entry_data.total += fleetCount;
+      
+      // Distribute fleets proportionally across factions (simplified heuristic)
+      // In reality, we'd need per-faction mining data from RYDN, but it's not available
+      const perFaction = Math.ceil(fleetCount / 3);
+      entry_data.byFaction.MUD += perFaction;
+      entry_data.byFaction.ONI += perFaction;
+      entry_data.byFaction.USTUR += fleetCount - perFaction * 2;
+    }
+    
+    // Build response
+    const now = new Date();
+    const nextReset = new Date(now);
+    nextReset.setUTCHours(24, 0, 0, 0);
+    if (nextReset <= now) nextReset.setUTCDate(nextReset.getUTCDate() + 1);
+    
+    const resources: MiningResourceData[] = Array.from(resourceMap.entries())
+      .map(([resource, data]) => ({
+        resource,
+        totalFleets: data.total,
+        byFaction: data.byFaction,
+        updatedAt: now.toISOString(),
+      }))
+      .filter((r) => r.totalFleets > 0)
+      .sort((a, b) => b.totalFleets - a.totalFleets);
+    
+    return {
+      resources,
+      resetAt: nextReset.toISOString(),
+      updatedAt: now.toISOString(),
+    };
+  } catch (error) {
+    app.log.warn(
+      { error: String(error) },
+      "Failed to fetch mining metrics from RYDN, returning empty",
+    );
+    return buildEmptyMiningMetrics();
+  }
+}
+
+function buildEmptyMiningMetrics(): BridgeMiningMetrics {
+  const now = new Date();
+  const nextReset = new Date(now);
+  nextReset.setUTCHours(24, 0, 0, 0);
+  if (nextReset <= now) nextReset.setUTCDate(nextReset.getUTCDate() + 1);
+  
+  return {
+    resources: [],
+    resetAt: nextReset.toISOString(),
+    updatedAt: now.toISOString(),
+  };
+}
+
 async function fetchJsonWithTimeout(url: string, timeoutMs: number) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -1018,6 +1442,67 @@ async function fetchUpstreamLiveMap(params: {
   const riskZones = Array.isArray(record.riskZones)
     ? (record.riskZones as BridgeMapRiskZone[])
     : [];
+  const metricsRecord = asRecord(record.connectedWalletMetrics);
+  const metricsByFaction = asRecord(metricsRecord?.byFaction);
+
+  const connectedWalletMetrics: BridgeConnectedWalletMetrics = metricsByFaction
+    ? {
+        totalConnectedWallets: clamp(
+          Number(metricsRecord?.totalConnectedWallets || 0),
+          0,
+          1_000_000,
+        ),
+        byFaction: {
+          MUD: clamp(Number(metricsByFaction.MUD || 0), 0, 1_000_000),
+          ONI: clamp(Number(metricsByFaction.ONI || 0), 0, 1_000_000),
+          USTUR: clamp(Number(metricsByFaction.USTUR || 0), 0, 1_000_000),
+        },
+      }
+    : buildConnectedWalletMetrics(params.wallet);
+
+  const metricRecord = asRecord(record.sagePlayersMetric);
+  const metricOnline = Number(metricRecord?.online);
+  const parsedFallbackMetric = parseSagePlayersMetricPayload(record);
+  const sagePlayersMetric: BridgeSagePlayersMetric = {
+    online:
+      Number.isFinite(metricOnline) && metricOnline >= 0
+        ? clamp(Math.round(metricOnline), 0, 1_000_000_000)
+        : parsedFallbackMetric.online,
+    source:
+      metricRecord?.source === "upstream" ||
+      metricRecord?.source === "estimated" ||
+      metricRecord?.source === "unavailable"
+        ? metricRecord.source
+        : Number.isFinite(metricOnline)
+          ? "upstream"
+          : parsedFallbackMetric.source,
+    updatedAt:
+      typeof metricRecord?.updatedAt === "string" && metricRecord.updatedAt
+        ? metricRecord.updatedAt
+        : new Date().toISOString(),
+  };
+
+  const activeProfilesRecord = asRecord(record.sageActiveProfilesMetric);
+  const activeProfilesValue = Number(activeProfilesRecord?.activeProfiles);
+  const parsedActiveProfilesFallback = parseSageActiveProfilesMetricPayload(record);
+  const sageActiveProfilesMetric: BridgeSageActiveProfilesMetric = {
+    activeProfiles:
+      Number.isFinite(activeProfilesValue) && activeProfilesValue >= 0
+        ? clamp(Math.round(activeProfilesValue), 0, 1_000_000_000)
+        : parsedActiveProfilesFallback.activeProfiles,
+    source:
+      activeProfilesRecord?.source === "upstream" ||
+      activeProfilesRecord?.source === "estimated" ||
+      activeProfilesRecord?.source === "unavailable"
+        ? activeProfilesRecord.source
+        : Number.isFinite(activeProfilesValue)
+          ? "upstream"
+          : parsedActiveProfilesFallback.source,
+    updatedAt:
+      typeof activeProfilesRecord?.updatedAt === "string" && activeProfilesRecord.updatedAt
+        ? activeProfilesRecord.updatedAt
+        : new Date().toISOString(),
+  };
 
   if (!fleets.length && !enemies.length && !resources.length) {
     return null;
@@ -1040,6 +1525,9 @@ async function fetchUpstreamLiveMap(params: {
     resources,
     routes,
     riskZones,
+    connectedWalletMetrics,
+    sagePlayersMetric,
+    sageActiveProfilesMetric,
   } satisfies BridgeLiveMap;
 }
 
@@ -1074,6 +1562,8 @@ async function buildBridgeLiveMap(params: {
   if (upstream) {
     return upstream;
   }
+
+  const sageActiveProfilesMetric = await fetchSageActiveProfilesMetric();
 
   const dataIntelSignals = await fetchDataIntelOrderSignals(params.wallet);
   const now = Date.now();
@@ -1201,6 +1691,13 @@ async function buildBridgeLiveMap(params: {
     resources,
     routes,
     riskZones,
+    connectedWalletMetrics: buildConnectedWalletMetrics(params.wallet),
+    sagePlayersMetric: {
+      online: null,
+      source: "unavailable",
+      updatedAt: nowIso,
+    },
+    sageActiveProfilesMetric,
   };
 }
 
@@ -1906,6 +2403,17 @@ const WALLET_AUTH_ADMIN_WALLETS = new Set(
     DEFAULT_WALLET_AUTH_ADMIN_WALLETS,
   ),
 );
+const DEV_ADMIN_PASSWORD_LOGIN_ENABLED =
+  String(process.env.DEV_ADMIN_PASSWORD_LOGIN_ENABLED || "false").toLowerCase() ===
+  "true";
+const DEV_ADMIN_PASSWORD = String(process.env.DEV_ADMIN_PASSWORD || "").trim();
+const DEV_ADMIN_WALLET = normalizeWalletAddress(
+  process.env.DEV_ADMIN_WALLET || DEFAULT_WALLET_AUTH_ADMIN_WALLETS[0] || "",
+);
+
+if (DEV_ADMIN_PASSWORD_LOGIN_ENABLED && isValidSolanaWallet(DEV_ADMIN_WALLET)) {
+  WALLET_AUTH_ADMIN_WALLETS.add(DEV_ADMIN_WALLET);
+}
 
 function parseDurationMs(value: string | undefined, fallbackMs: number) {
   const parsed = Number(value);
@@ -1935,6 +2443,17 @@ const UPSTASH_REDIS_REST_URL = (process.env.UPSTASH_REDIS_REST_URL || "").trim()
 const UPSTASH_REDIS_REST_TOKEN = (process.env.UPSTASH_REDIS_REST_TOKEN || "").trim();
 const CACHE_KEY_PREFIX = (process.env.CACHE_KEY_PREFIX || "star-atlas:cache").trim();
 const SHARED_CACHE_ENABLED = Boolean(UPSTASH_REDIS_REST_URL && UPSTASH_REDIS_REST_TOKEN);
+
+function isMatchingDevAdminPassword(password: string) {
+  const expected = Buffer.from(DEV_ADMIN_PASSWORD, "utf-8");
+  const provided = Buffer.from(password, "utf-8");
+
+  if (!expected.length || provided.length !== expected.length) {
+    return false;
+  }
+
+  return timingSafeEqual(provided, expected);
+}
 
 type CacheEntry<T> = {
   value: T;
@@ -3333,6 +3852,54 @@ app.post<{
   };
 });
 
+app.post<{
+  Body: {
+    password?: string;
+  };
+}>("/api/auth/dev-admin/login", async (request, reply) => {
+  pruneWalletAuthStores();
+
+  if (!DEV_ADMIN_PASSWORD_LOGIN_ENABLED) {
+    return reply.code(404).send({ error: "Not found" });
+  }
+
+  if (!DEV_ADMIN_PASSWORD || !isValidSolanaWallet(DEV_ADMIN_WALLET)) {
+    request.log.error(
+      "DEV_ADMIN_PASSWORD_LOGIN_ENABLED=true but DEV_ADMIN_PASSWORD/DEV_ADMIN_WALLET is invalid",
+    );
+    return reply.code(503).send({ error: "Dev admin login is misconfigured" });
+  }
+
+  const password = String(request.body?.password || "");
+  if (!password.trim()) {
+    return reply.code(400).send({ error: "password is required" });
+  }
+
+  if (!isMatchingDevAdminPassword(password)) {
+    return reply.code(401).send({ error: "Invalid password" });
+  }
+
+  const { user, isNewRegistration } = upsertWalletAuthUser(DEV_ADMIN_WALLET);
+  await writeWalletAuthUsers(walletAuthUsersStore);
+  const session = createWalletAuthSession(user.wallet);
+
+  return {
+    success: true,
+    isNewRegistration,
+    token: session.token,
+    tokenType: "Bearer",
+    expiresAt: session.expiresAt,
+    user: {
+      wallet: user.wallet,
+      registeredAt: user.registeredAt,
+      verifiedAt: user.verifiedAt,
+      lastLoginAt: user.lastLoginAt,
+      loginCount: user.loginCount,
+      isAdmin: isAdminWallet(user.wallet),
+    },
+  };
+});
+
 app.get("/api/auth/wallet/session", async (request, reply) => {
   pruneWalletAuthStores();
 
@@ -3884,6 +4451,17 @@ app.get<{
   reply.header("cache-control", "no-store");
   reply.header("x-map-sync", "live");
   return payload;
+});
+
+app.get<{
+  Querystring: {
+    role?: string;
+  };
+}>("/api/bridge/resources", async (request, reply) => {
+  const miningMetrics = await fetchSageMiningMetrics();
+  reply.header("cache-control", "max-age=60");
+  reply.header("x-mining-sync", "live");
+  return miningMetrics;
 });
 
 app.get("/api/bridge/access/me", async (request, reply) => {

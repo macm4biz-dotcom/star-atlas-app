@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import type { FormEvent } from "react";
 import { useConnection, useWallet } from "@solana/wallet-adapter-react";
 import { WalletMultiButton } from "@solana/wallet-adapter-react-ui";
-import { PublicKey, Transaction, TransactionInstruction } from "@solana/web3.js";
+import { Connection, PublicKey, Transaction, TransactionInstruction } from "@solana/web3.js";
 import { Buffer } from "buffer";
 import { ApiRequestError, apiRequest } from "./apiClient";
 import "./App.css";
@@ -87,6 +87,17 @@ type MarketBuyResponse = {
   };
 };
 
+type LatestBlockhashResponse = {
+  blockhash: string;
+  lastValidBlockHeight: number;
+};
+
+type SendRawTxResponse = {
+  success: true;
+  signature: string;
+  confirmed: boolean;
+};
+
 type BarterOffer = {
   id: string;
   fromWallet: string;
@@ -167,6 +178,76 @@ type BridgeOperationType =
   | "repair";
 type BridgeRiskTolerance = "low" | "medium" | "high";
 type BridgeAlertLevel = "critical" | "high" | "normal" | "info";
+type BridgeMapPresetKey = "Tactical" | "Logistics" | "Economy" | "Threat" | "Command";
+type BridgeMapLayers = {
+  fleets: boolean;
+  enemies: boolean;
+  resources: boolean;
+  routes: boolean;
+  riskZones: boolean;
+};
+
+type BridgeMapPoint = {
+  id: string;
+  label: string;
+  x: number;
+  y: number;
+  strength?: number;
+  updatedAt?: string;
+};
+
+type BridgeMapRoute = {
+  id: string;
+  points: string;
+  etaMinutes?: number;
+  updatedAt?: string;
+};
+
+type BridgeMapRiskZone = {
+  id: string;
+  x: number;
+  y: number;
+  r: number;
+  severity: "critical" | "high" | "normal";
+  updatedAt?: string;
+};
+
+type BridgeFaction = "MUD" | "ONI" | "USTUR";
+
+type BridgeConnectedWalletMetrics = {
+  totalConnectedWallets: number;
+  byFaction: Record<BridgeFaction, number>;
+};
+
+type BridgeSagePlayersMetric = {
+  online: number | null;
+  source: "upstream" | "estimated" | "unavailable";
+  updatedAt: string;
+};
+
+type BridgeSageActiveProfilesMetric = {
+  activeProfiles: number | null;
+  source: "upstream" | "estimated" | "unavailable";
+  updatedAt: string;
+};
+
+type BridgeLiveMapResponse = {
+  generatedAt: string;
+  source: "upstream" | "data-intel" | "synthetic";
+  role: BridgeRole;
+  profile: BridgeC4Profile;
+  mapImageUrl: string;
+  refreshMs: number;
+  activityScore: number;
+  fleets: BridgeMapPoint[];
+  enemies: BridgeMapPoint[];
+  resources: BridgeMapPoint[];
+  routes: BridgeMapRoute[];
+  riskZones: BridgeMapRiskZone[];
+  connectedWalletMetrics?: BridgeConnectedWalletMetrics;
+  sagePlayersMetric?: BridgeSagePlayersMetric;
+  sageActiveProfilesMetric?: BridgeSageActiveProfilesMetric;
+};
 
 type BridgeCapabilities = {
   canApproveCritical: boolean;
@@ -230,6 +311,15 @@ type BridgeAuditResponse = {
 
 type BridgeAuditFilterType = "all" | BridgeAuditEvent["eventType"];
 type BridgeAuditPeriod = "24h" | "7d" | "30d" | "all";
+type BridgeWorkspaceView =
+  | "preflight"
+  | "alerts"
+  | "audit"
+  | "map"
+  | "ops"
+  | "notify"
+  | "security"
+  | "readiness";
 
 type BridgePreflight = {
   success: true;
@@ -293,6 +383,24 @@ type WalletAuthSessionResponse = {
   };
 };
 
+type BridgeAccessMeResponse = {
+  success: true;
+  wallet: string;
+  isAdmin: boolean;
+  hasBridgeAccess: boolean;
+};
+
+type BridgeAccessEntry = {
+  wallet: string;
+  grantedAt: string;
+  grantedBy: string;
+};
+
+type BridgeAccessListResponse = {
+  success: true;
+  entries: BridgeAccessEntry[];
+};
+
 function parseListInput(input: string) {
   return Array.from(
     new Set(
@@ -338,8 +446,9 @@ function isLikelySolanaAddress(address: string) {
 }
 
 const SPL_TOKEN_PROGRAM = new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA");
-const ATA_PROGRAM = new PublicKey("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJe1Y");
+const ATA_PROGRAM = new PublicKey("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL");
 const SYSTEM_PROGRAM = new PublicKey("11111111111111111111111111111111");
+const SYSVAR_RENT_PROGRAM = new PublicKey("SysvarRent111111111111111111111111111111111");
 
 function getAta(mint: PublicKey, owner: PublicKey): PublicKey {
   return PublicKey.findProgramAddressSync(
@@ -385,17 +494,47 @@ function createAtaIdempotentInstruction(
       { pubkey: mint, isSigner: false, isWritable: false },
       { pubkey: SYSTEM_PROGRAM, isSigner: false, isWritable: false },
       { pubkey: SPL_TOKEN_PROGRAM, isSigner: false, isWritable: false },
+      { pubkey: SYSVAR_RENT_PROGRAM, isSigner: false, isWritable: false },
     ],
     programId: ATA_PROGRAM,
     data: Buffer.from([1]),
   });
 }
 
+async function getLatestBlockhashSafe(connection: Connection) {
+  try {
+    return await connection.getLatestBlockhash("confirmed");
+  } catch {
+    return await apiRequest<LatestBlockhashResponse>("/api/solana/latest-blockhash");
+  }
+}
+
+async function sendRawTransactionSafe(
+  connection: Connection,
+  raw: Uint8Array,
+) {
+  try {
+    const signature = await connection.sendRawTransaction(raw, { skipPreflight: false });
+    await connection.confirmTransaction(signature, "confirmed");
+    return signature;
+  } catch {
+    const fallback = await apiRequest<SendRawTxResponse>("/api/solana/send-raw", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        rawTxBase64: Buffer.from(raw).toString("base64"),
+        waitForConfirmation: true,
+      }),
+    });
+    return fallback.signature;
+  }
+}
+
 function App() {
   const { connection } = useConnection();
   const { publicKey, connected, signMessage, signTransaction } = useWallet();
   const [activeTab, setActiveTab] = useState<
-    "news" | "archive" | "dashboard" | "bridge" | "market" | "intel"
+    "news" | "archive" | "dashboard" | "bridge" | "market" | "intel" | "resources"
   >(
     "news",
   );
@@ -463,6 +602,9 @@ function App() {
   const [archiveData, setArchiveData] = useState<NewsArchiveResponse | null>(null);
   const [archiveLoading, setArchiveLoading] = useState(false);
   const [archiveError, setArchiveError] = useState<string | null>(null);
+  const [miningMetrics, setMiningMetrics] = useState<any | null>(null);
+  const [miningLoading, setMiningLoading] = useState(false);
+  const [miningError, setMiningError] = useState<string | null>(null);
   const [bridgeRole, setBridgeRole] = useState<BridgeRole>("Captain");
   const [bridgeProfile, setBridgeProfile] = useState<BridgeC4Profile>("c4-transition");
   const [bridgeConfig, setBridgeConfig] = useState<BridgeConfig | null>(null);
@@ -475,12 +617,25 @@ function App() {
   const [bridgeLoading, setBridgeLoading] = useState(false);
   const [bridgeBusy, setBridgeBusy] = useState(false);
   const [bridgeMessage, setBridgeMessage] = useState<string | null>(null);
+  const [bridgeWorkspaceView, setBridgeWorkspaceView] =
+    useState<BridgeWorkspaceView | null>(null);
+  const [bridgeLiveMap, setBridgeLiveMap] = useState<BridgeLiveMapResponse | null>(null);
+  const [bridgeLiveMapLoading, setBridgeLiveMapLoading] = useState(false);
+  const [bridgeLiveMapError, setBridgeLiveMapError] = useState<string | null>(null);
   const [bridgePreflight, setBridgePreflight] = useState<BridgePreflight | null>(null);
   const [bridgePreflightForm, setBridgePreflightForm] = useState({
     operationType: "fleet-dispatch" as BridgeOperationType,
     operationValueUsd: "3500",
     routeComplexity: "3",
     riskTolerance: "medium" as BridgeRiskTolerance,
+  });
+  const [bridgeMapPreset, setBridgeMapPreset] = useState<BridgeMapPresetKey>("Command");
+  const [bridgeMapLayers, setBridgeMapLayers] = useState<BridgeMapLayers>({
+    fleets: true,
+    enemies: true,
+    resources: true,
+    routes: true,
+    riskZones: true,
   });
 
   const connectedWalletAddress = publicKey?.toBase58() || "";
@@ -494,6 +649,22 @@ function App() {
   const [walletAuthUser, setWalletAuthUser] = useState<WalletAuthUserProfile | null>(null);
   const [walletAuthBusy, setWalletAuthBusy] = useState(false);
   const [walletAuthMessage, setWalletAuthMessage] = useState<string | null>(null);
+  const [devAdminPassword, setDevAdminPassword] = useState("");
+  const [hasBridgeAccess, setHasBridgeAccess] = useState(false);
+  const [bridgeAccessChecked, setBridgeAccessChecked] = useState(false);
+  const [bridgeAccessList, setBridgeAccessList] = useState<BridgeAccessEntry[]>([]);
+  const [bridgeAccessWalletInput, setBridgeAccessWalletInput] = useState("");
+  const [bridgeAccessBusy, setBridgeAccessBusy] = useState(false);
+  const [bridgeAccessMessage, setBridgeAccessMessage] = useState<string | null>(null);
+
+  const isWalletSessionBound = Boolean(
+    connected &&
+      connectedWalletAddress &&
+      walletAuthToken &&
+      walletAuthUser?.wallet === connectedWalletAddress,
+  );
+  const isAdminSession = Boolean(walletAuthToken && walletAuthUser?.isAdmin);
+  const bridgeAccessActive = hasBridgeAccess && (isWalletSessionBound || isAdminSession);
 
   const bridgeFilteredAuditData = useMemo(() => {
     const now = Date.now();
@@ -666,6 +837,106 @@ function App() {
         window.localStorage.removeItem("walletAuthToken");
       }
       console.error(sessionError);
+    }
+  };
+
+  const loadBridgeAccessMe = async (token: string) => {
+    if (!token) {
+      setHasBridgeAccess(false);
+      setBridgeAccessChecked(true);
+      return;
+    }
+
+    try {
+      const payload = await apiRequest<BridgeAccessMeResponse>("/api/bridge/access/me", {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
+      setHasBridgeAccess(payload.hasBridgeAccess);
+    } catch (error) {
+      setHasBridgeAccess(false);
+      console.error(error);
+    } finally {
+      setBridgeAccessChecked(true);
+    }
+  };
+
+  const loadBridgeAccessList = async (token: string) => {
+    if (!token || !walletAuthUser?.isAdmin) return;
+
+    try {
+      const payload = await apiRequest<BridgeAccessListResponse>(
+        "/api/bridge/admin/access-list",
+        {
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        },
+      );
+      setBridgeAccessList(payload.entries);
+    } catch (error) {
+      setBridgeAccessMessage(`Не удалось загрузить доступы Bridge: ${getErrorMessage(error)}`);
+    }
+  };
+
+  const grantBridgeAccess = async () => {
+    if (!walletAuthToken || !walletAuthUser?.isAdmin) {
+      setBridgeAccessMessage("Доступно только для администратора.");
+      return;
+    }
+
+    const walletToGrant = bridgeAccessWalletInput.trim();
+    if (!walletToGrant) {
+      setBridgeAccessMessage("Укажи кошелек для выдачи доступа.");
+      return;
+    }
+
+    setBridgeAccessBusy(true);
+    setBridgeAccessMessage(null);
+
+    try {
+      await apiRequest("/api/bridge/admin/access-list", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${walletAuthToken}`,
+        },
+        body: JSON.stringify({ wallet: walletToGrant }),
+      });
+
+      setBridgeAccessWalletInput("");
+      setBridgeAccessMessage("Доступ выдан.");
+      await loadBridgeAccessList(walletAuthToken);
+    } catch (error) {
+      setBridgeAccessMessage(`Ошибка выдачи доступа: ${getErrorMessage(error)}`);
+    } finally {
+      setBridgeAccessBusy(false);
+    }
+  };
+
+  const revokeBridgeAccess = async (walletToRevoke: string) => {
+    if (!walletAuthToken || !walletAuthUser?.isAdmin) {
+      setBridgeAccessMessage("Доступно только для администратора.");
+      return;
+    }
+
+    setBridgeAccessBusy(true);
+    setBridgeAccessMessage(null);
+
+    try {
+      await apiRequest(`/api/bridge/admin/access-list/${encodeURIComponent(walletToRevoke)}`, {
+        method: "DELETE",
+        headers: {
+          Authorization: `Bearer ${walletAuthToken}`,
+        },
+      });
+      setBridgeAccessMessage("Доступ отозван.");
+      await loadBridgeAccessList(walletAuthToken);
+    } catch (error) {
+      setBridgeAccessMessage(`Ошибка отзыва доступа: ${getErrorMessage(error)}`);
+    } finally {
+      setBridgeAccessBusy(false);
     }
   };
 
@@ -867,6 +1138,42 @@ function App() {
     }
   };
 
+  const loginDevAdminByPassword = async () => {
+    const password = devAdminPassword.trim();
+    if (!password) {
+      setWalletAuthMessage("Введи пароль администратора.");
+      return;
+    }
+
+    setWalletAuthBusy(true);
+    setWalletAuthMessage(null);
+
+    try {
+      const payload = await apiRequest<WalletAuthVerifyResponse>("/api/auth/dev-admin/login", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          password,
+        }),
+      });
+
+      setWalletAuthToken(payload.token);
+      setWalletAuthUser(payload.user);
+      setDevAdminPassword("");
+      if (typeof window !== "undefined") {
+        window.localStorage.setItem("walletAuthToken", payload.token);
+      }
+
+      setWalletAuthMessage("Dev admin сессия открыта.");
+    } catch (error) {
+      setWalletAuthMessage(`Ошибка dev admin login: ${getErrorMessage(error)}`);
+    } finally {
+      setWalletAuthBusy(false);
+    }
+  };
+
   const loadDashboard = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     setLoading(true);
@@ -900,10 +1207,27 @@ function App() {
   useEffect(() => {
     if (walletAuthToken) {
       void refreshWalletSession(walletAuthToken);
+      void loadBridgeAccessMe(walletAuthToken);
       return;
     }
     setWalletAuthUser(null);
+    setHasBridgeAccess(false);
+    setBridgeAccessChecked(true);
+    setBridgeAccessList([]);
+    setBridgeAccessMessage(null);
   }, [walletAuthToken]);
+
+  useEffect(() => {
+    if (activeTab === "bridge" && bridgeAccessChecked && !bridgeAccessActive) {
+      setActiveTab("news");
+    }
+  }, [activeTab, bridgeAccessChecked, bridgeAccessActive]);
+
+  useEffect(() => {
+    if (activeTab !== "bridge") {
+      setBridgeWorkspaceView(null);
+    }
+  }, [activeTab]);
 
   const loadMarketSettings = async () => {
     setSettingsBusy(true);
@@ -1038,14 +1362,14 @@ function App() {
       escrowTx.add(splTransferInstruction(sellerAta, escrowAta, publicKey, 1n));
       escrowTx.feePayer = publicKey;
 
-      const { blockhash } = await connection.getLatestBlockhash("confirmed");
+      const { blockhash } = await getLatestBlockhashSafe(connection);
       escrowTx.recentBlockhash = blockhash;
 
       const signedEscrowTx = await signTransaction(escrowTx);
-      const escrowSignature = await connection.sendRawTransaction(signedEscrowTx.serialize(), {
-        skipPreflight: false,
-      });
-      await connection.confirmTransaction(escrowSignature, "confirmed");
+      const escrowSignature = await sendRawTransactionSafe(
+        connection,
+        signedEscrowTx.serialize(),
+      );
 
       setListingsMessage("Escrow подтвержден. Создаем листинг...");
 
@@ -1082,7 +1406,7 @@ function App() {
       await loadListings();
       await loadSellPickerNfts(walletAuthToken);
     } catch (createError) {
-      setListingsMessage("Ошибка создания листинга.");
+      setListingsMessage(`Ошибка создания листинга: ${getErrorMessage(createError)}`);
       console.error(createError);
     }
   };
@@ -1145,7 +1469,7 @@ function App() {
         marketConfig?.usdcMint ?? "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
       );
       const platformWallet = new PublicKey(
-        marketConfig?.platformFeeWallet ?? "YQmg9nTsvVLUgtj35pY8WUPRVGHaz7KfmaCgPuS6bwY",
+        marketConfig?.platformFeeWallet ?? "7BNFxaeXA2DPLRnYeRLEMqA5gAWgMGdG3tcJBFrbzH5v",
       );
       const feeBps = marketConfig?.platformFeeBps ?? 100;
       const sellerWallet = new PublicKey(listing.sellerWallet);
@@ -1169,14 +1493,11 @@ function App() {
       }
 
       tx.feePayer = publicKey;
-      const { blockhash } = await connection.getLatestBlockhash("confirmed");
+      const { blockhash } = await getLatestBlockhashSafe(connection);
       tx.recentBlockhash = blockhash;
 
       const signed = await signTransaction(tx);
-      const signature = await connection.sendRawTransaction(signed.serialize(), {
-        skipPreflight: false,
-      });
-      await connection.confirmTransaction(signature, "confirmed");
+      const signature = await sendRawTransactionSafe(connection, signed.serialize());
 
       await buyListing(listing.id, signature);
     } catch (buyError) {
@@ -1381,10 +1702,30 @@ function App() {
     }
   };
 
+  const loadMiningMetrics = async () => {
+    setMiningLoading(true);
+    setMiningError(null);
+
+    try {
+      const payload = await apiRequest<any>("/api/bridge/resources");
+      setMiningMetrics(payload);
+    } catch (requestError) {
+      setMiningError("Не удалось загрузить метрики добычи.");
+      console.error(requestError);
+    } finally {
+      setMiningLoading(false);
+    }
+  };
+
   const loadBridgeRuntime = async (
     role: BridgeRole = bridgeRole,
     profile: BridgeC4Profile = bridgeProfile,
   ) => {
+    if (!walletAuthToken) {
+      setBridgeMessage("Сначала войди в wallet-сессию для доступа к Captain's Bridge.");
+      return;
+    }
+
     setBridgeLoading(true);
     setBridgeMessage(null);
 
@@ -1392,12 +1733,27 @@ function App() {
       const [config, alerts, audit] = await Promise.all([
         apiRequest<BridgeConfig>(
           `/api/bridge/config?role=${encodeURIComponent(role)}&profile=${encodeURIComponent(profile)}`,
+          {
+            headers: {
+              Authorization: `Bearer ${walletAuthToken}`,
+            },
+          },
         ),
         apiRequest<BridgeAlertsResponse>(
           `/api/bridge/alerts?role=${encodeURIComponent(role)}&limit=12`,
+          {
+            headers: {
+              Authorization: `Bearer ${walletAuthToken}`,
+            },
+          },
         ),
         apiRequest<BridgeAuditResponse>(
           `/api/bridge/audit?role=${encodeURIComponent(role)}&limit=10`,
+          {
+            headers: {
+              Authorization: `Bearer ${walletAuthToken}`,
+            },
+          },
         ),
       ]);
 
@@ -1414,8 +1770,45 @@ function App() {
     }
   };
 
+  const loadBridgeLiveMap = async (
+    role: BridgeRole = bridgeRole,
+    profile: BridgeC4Profile = bridgeProfile,
+    quiet = false,
+  ) => {
+    if (!walletAuthToken) return;
+
+    if (!quiet) {
+      setBridgeLiveMapLoading(true);
+    }
+    setBridgeLiveMapError(null);
+
+    try {
+      const payload = await apiRequest<BridgeLiveMapResponse>(
+        `/api/bridge/live-map?role=${encodeURIComponent(role)}&profile=${encodeURIComponent(profile)}&windowMinutes=90`,
+        {
+          headers: {
+            Authorization: `Bearer ${walletAuthToken}`,
+          },
+        },
+      );
+      setBridgeLiveMap(payload);
+    } catch (error) {
+      setBridgeLiveMapError(getErrorMessage(error));
+    } finally {
+      if (!quiet) {
+        setBridgeLiveMapLoading(false);
+      }
+    }
+  };
+
   const runBridgePreflight = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+
+    if (!walletAuthToken) {
+      setBridgeMessage("Сначала войди в wallet-сессию для доступа к Captain's Bridge.");
+      return;
+    }
+
     setBridgeBusy(true);
     setBridgeMessage(null);
 
@@ -1439,6 +1832,7 @@ function App() {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
+          Authorization: `Bearer ${walletAuthToken}`,
         },
         body: JSON.stringify({
           role: bridgeRole,
@@ -1454,6 +1848,11 @@ function App() {
       setBridgeMessage("Pre-flight расчет обновлен.");
       const audit = await apiRequest<BridgeAuditResponse>(
         `/api/bridge/audit?role=${encodeURIComponent(bridgeRole)}&limit=10`,
+        {
+          headers: {
+            Authorization: `Bearer ${walletAuthToken}`,
+          },
+        },
       );
       setBridgeAuditData(audit.items);
     } catch (bridgeError) {
@@ -1465,6 +1864,11 @@ function App() {
   };
 
   const ackBridgeAlert = async (alertId: string) => {
+    if (!walletAuthToken) {
+      setBridgeMessage("Сначала войди в wallet-сессию для доступа к Captain's Bridge.");
+      return;
+    }
+
     setBridgeBusy(true);
     setBridgeMessage(null);
 
@@ -1473,6 +1877,7 @@ function App() {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
+          Authorization: `Bearer ${walletAuthToken}`,
         },
         body: JSON.stringify({
           role: bridgeRole,
@@ -1484,9 +1889,19 @@ function App() {
       const [alerts, audit] = await Promise.all([
         apiRequest<BridgeAlertsResponse>(
           `/api/bridge/alerts?role=${encodeURIComponent(bridgeRole)}&limit=12`,
+          {
+            headers: {
+              Authorization: `Bearer ${walletAuthToken}`,
+            },
+          },
         ),
         apiRequest<BridgeAuditResponse>(
           `/api/bridge/audit?role=${encodeURIComponent(bridgeRole)}&limit=10`,
+          {
+            headers: {
+              Authorization: `Bearer ${walletAuthToken}`,
+            },
+          },
         ),
       ]);
       setBridgeAlertsData(alerts.items);
@@ -1537,6 +1952,12 @@ function App() {
   }, [activeTab, intelData, intelLoading]);
 
   useEffect(() => {
+    if (activeTab === "resources" && !miningMetrics && !miningLoading) {
+      void loadMiningMetrics();
+    }
+  }, [activeTab, miningMetrics, miningLoading]);
+
+  useEffect(() => {
     if (activeTab === "archive" && !archiveData && !archiveLoading) {
       void loadNewsArchive();
     }
@@ -1546,7 +1967,33 @@ function App() {
     if (activeTab === "bridge" && !bridgeConfig && !bridgeLoading) {
       void loadBridgeRuntime();
     }
-  }, [activeTab, bridgeConfig, bridgeLoading]);
+  }, [activeTab, bridgeConfig, bridgeLoading, bridgeAccessActive]);
+
+  useEffect(() => {
+    if (activeTab !== "bridge" || !bridgeAccessActive || !walletAuthToken) {
+      return;
+    }
+
+    void loadBridgeLiveMap(bridgeRole, bridgeProfile, false);
+    const intervalId = window.setInterval(() => {
+      void loadBridgeLiveMap(bridgeRole, bridgeProfile, true);
+    }, 10_000);
+
+    return () => {
+      window.clearInterval(intervalId);
+    };
+  }, [activeTab, bridgeAccessActive, walletAuthToken, bridgeRole, bridgeProfile]);
+
+  useEffect(() => {
+    if (
+      activeTab === "market" &&
+      marketSection === "settings" &&
+      walletAuthToken &&
+      walletAuthUser?.isAdmin
+    ) {
+      void loadBridgeAccessList(walletAuthToken);
+    }
+  }, [activeTab, marketSection, walletAuthToken, walletAuthUser?.isAdmin]);
 
   const sourceLabel: Record<IntelSourceKey, string> = {
     official: "Official",
@@ -1555,24 +2002,137 @@ function App() {
     discord: "Discord",
   };
 
-  const bridgeMapPresets = [
+  const bridgeMapPresets: Array<{
+    name: BridgeMapPresetKey;
+    payload: string;
+    layers: BridgeMapLayers;
+  }> = [
     {
       name: "Tactical",
       payload: "Флоты ДАК, враги, риск-зоны, hot-ивенты 5-15с",
+      layers: { fleets: true, enemies: true, resources: false, routes: true, riskZones: true },
     },
     {
       name: "Logistics",
       payload: "Маршруты, груз, ETA, bottleneck и ресурсы в пути",
+      layers: { fleets: true, enemies: false, resources: true, routes: true, riskZones: true },
     },
     {
       name: "Economy",
       payload: "NAV, спреды, burn rate, маржа крафта vs market",
+      layers: { fleets: false, enemies: false, resources: true, routes: false, riskZones: true },
+    },
+    {
+      name: "Threat",
+      payload: "Вражеские контакты, аномалии, риск-зоны и периметр безопасности",
+      layers: { fleets: true, enemies: true, resources: false, routes: false, riskZones: true },
     },
     {
       name: "Command",
-      payload: "Сводка по операциям, рискам и статусу API/воркеров",
+      payload: "Сводка командования: все ключевые слои на одной карте",
+      layers: { fleets: true, enemies: true, resources: true, routes: true, riskZones: true },
     },
   ];
+
+  const bridgeMapPresetByName = new Map(bridgeMapPresets.map((preset) => [preset.name, preset]));
+  const bridgeVisiblePresetNames =
+    ((bridgeConfig?.capabilities.visiblePresets || []) as BridgeMapPresetKey[]).length
+      ? ((bridgeConfig?.capabilities.visiblePresets || []) as BridgeMapPresetKey[])
+      : bridgeMapPresets.map((preset) => preset.name);
+  const bridgePresetSummary =
+    bridgeMapPresetByName.get(bridgeMapPreset)?.payload ||
+    "Выбери пресет, чтобы быстро настроить слои под задачу роли.";
+
+  const bridgeMapFallbackFleets = [
+    { id: "f-1", label: "EV Alpha", x: 180, y: 150 },
+    { id: "f-2", label: "EV Cargo", x: 360, y: 220 },
+    { id: "f-3", label: "EV Scout", x: 690, y: 170 },
+    { id: "f-4", label: "EV Shield", x: 840, y: 355 },
+  ];
+  const bridgeMapFallbackEnemies = [
+    { id: "e-1", label: "Raid Cell", x: 760, y: 115 },
+    { id: "e-2", label: "Hostile Wing", x: 580, y: 360 },
+  ];
+  const bridgeMapFallbackResources = [
+    { id: "r-1", label: "Fuel Node", x: 280, y: 330 },
+    { id: "r-2", label: "Ore Field", x: 510, y: 120 },
+    { id: "r-3", label: "Food Depot", x: 905, y: 245 },
+  ];
+  const bridgeMapFallbackRoutes = [
+    { id: "rt-1", points: "180,150 260,180 360,220 450,245" },
+    { id: "rt-2", points: "360,220 450,175 570,150 690,170" },
+    { id: "rt-3", points: "690,170 760,210 810,290 840,355" },
+  ];
+  const bridgeFallbackRiskZones = [
+    { id: "z-1", x: 590, y: 340, r: 95 },
+    { id: "z-2", x: 770, y: 125, r: 72 },
+  ];
+
+  const bridgeMapImageUrl =
+    bridgeLiveMap?.mapImageUrl || "https://cdn.staratlas.com/sage-labs/map-hires-dark.jpg";
+  const bridgeMapFleets = bridgeLiveMap?.fleets?.length
+    ? bridgeLiveMap.fleets
+    : bridgeMapFallbackFleets;
+  const bridgeMapEnemies = bridgeLiveMap?.enemies?.length
+    ? bridgeLiveMap.enemies
+    : bridgeMapFallbackEnemies;
+  const bridgeMapResources = bridgeLiveMap?.resources?.length
+    ? bridgeLiveMap.resources
+    : bridgeMapFallbackResources;
+  const bridgeMapRoutes = bridgeLiveMap?.routes?.length
+    ? bridgeLiveMap.routes
+    : bridgeMapFallbackRoutes;
+  const bridgeRiskZones = bridgeLiveMap?.riskZones?.length
+    ? bridgeLiveMap.riskZones
+    : bridgeFallbackRiskZones;
+  const bridgeConnectedWalletMetrics = bridgeLiveMap?.connectedWalletMetrics;
+  const bridgeSageActiveProfilesMetric = bridgeLiveMap?.sageActiveProfilesMetric;
+
+  const applyBridgePreset = (presetName: BridgeMapPresetKey) => {
+    const preset = bridgeMapPresetByName.get(presetName);
+    if (!preset) return;
+    setBridgeMapPreset(preset.name);
+    setBridgeMapLayers({ ...preset.layers });
+  };
+
+  const toggleBridgeLayer = (layer: keyof BridgeMapLayers) => {
+    setBridgeMapLayers((current) => ({
+      ...current,
+      [layer]: !current[layer],
+    }));
+  };
+
+  const bridgeLayerLabels: Record<keyof BridgeMapLayers, string> = {
+    fleets: "Флоты",
+    enemies: "Угрозы",
+    resources: "Ресурсы",
+    routes: "Маршруты",
+    riskZones: "Риск-зоны",
+  };
+
+  const bridgeLayerOrder: Array<keyof BridgeMapLayers> = [
+    "fleets",
+    "enemies",
+    "resources",
+    "routes",
+    "riskZones",
+  ];
+
+  useEffect(() => {
+    if (!bridgeVisiblePresetNames.length) {
+      return;
+    }
+    if (bridgeVisiblePresetNames.includes(bridgeMapPreset)) {
+      return;
+    }
+    const fallback = bridgeVisiblePresetNames[0];
+    const preset = bridgeMapPresetByName.get(fallback);
+    if (!preset) {
+      return;
+    }
+    setBridgeMapPreset(fallback);
+    setBridgeMapLayers({ ...preset.layers });
+  }, [bridgeVisiblePresetNames, bridgeMapPreset, bridgeMapPresetByName]);
 
   const bridgeOps = [
     "Отправка/возврат флота",
@@ -1624,6 +2184,45 @@ function App() {
     { key: "repair", label: "Repair" },
   ];
 
+  const openBridgeAccessCenter = () => {
+    if (bridgeAccessActive) {
+      setActiveTab("bridge");
+      return;
+    }
+
+    setActiveTab("market");
+
+    if (!connected && !walletAuthUser?.isAdmin) {
+      setWalletAuthMessage("Подключи кошелек и открой wallet-сессию для доступа к Captain's Bridge.");
+      return;
+    }
+
+    if (!walletAuthToken) {
+      setWalletAuthMessage(
+        "Открой wallet-сессию: после верификации можно запросить доступ к Captain's Bridge.",
+      );
+      return;
+    }
+
+    if (walletAuthUser?.isAdmin) {
+      setMarketSection("settings");
+      setBridgeAccessMessage("Здесь можно выдать доступ к Captain's Bridge нужным кошелькам.");
+      return;
+    }
+
+    setWalletAuthMessage(
+      "Доступ к Captain's Bridge выдаёт Fleet Admiral. Передай ему адрес своего кошелька.",
+    );
+  };
+
+  const toggleBridgeWorkspaceView = (view: BridgeWorkspaceView) => {
+    setBridgeWorkspaceView((current) => (current === view ? null : view));
+  };
+
+  const closeBridgeWorkspaceView = () => {
+    setBridgeWorkspaceView(null);
+  };
+
   return (
     <main className="page">
       <header className="hero">
@@ -1663,13 +2262,15 @@ function App() {
         >
           Dashboard
         </button>
-        <button
-          type="button"
-          className={activeTab === "bridge" ? "section-tab active" : "section-tab"}
-          onClick={() => setActiveTab("bridge")}
-        >
-          Капитанский Мостик
-        </button>
+        {bridgeAccessActive ? (
+          <button
+            type="button"
+            className={activeTab === "bridge" ? "section-tab active" : "section-tab"}
+            onClick={() => setActiveTab("bridge")}
+          >
+            Капитанский Мостик
+          </button>
+        ) : null}
         <button
           type="button"
           className={activeTab === "market" ? "section-tab active" : "section-tab"}
@@ -1683,6 +2284,37 @@ function App() {
           onClick={() => setActiveTab("intel")}
         >
           Intel
+        </button>
+        <button
+          type="button"
+          className={activeTab === "resources" ? "section-tab active" : "section-tab"}
+          onClick={() => setActiveTab("resources")}
+        >
+          Ресурсы
+        </button>
+        <button
+          type="button"
+          className="section-tab-status"
+          aria-live="polite"
+          onClick={openBridgeAccessCenter}
+        >
+          <span
+            className={
+              bridgeAccessActive
+                ? "section-tab-status-dot section-tab-status-dot-ok"
+                : "section-tab-status-dot section-tab-status-dot-off"
+            }
+            aria-hidden="true"
+          />
+          {walletAuthToken && connected
+            ? bridgeAccessChecked
+              ? bridgeAccessActive
+                ? "Bridge: access"
+                : "Bridge: no access"
+              : "Bridge: checking"
+            : walletAuthToken && !connected
+              ? "Bridge: connect wallet"
+            : "Bridge: no session"}
         </button>
       </section>
 
@@ -2000,8 +2632,23 @@ function App() {
         )}
       </section> : null}
 
-      {activeTab === "bridge" ? (
+      {activeTab === "bridge" && !bridgeAccessActive ? (
         <section className="panel bridge-panel">
+          <h2>Captain&apos;s Bridge</h2>
+          <p className="subtitle">
+            Доступ к мостику недоступен. Нужны активная wallet-сессия и подключенный кошелек с выданным доступом.
+          </p>
+        </section>
+      ) : null}
+
+      {activeTab === "bridge" && bridgeAccessActive ? (
+        <section
+          className={
+            bridgeWorkspaceView
+              ? "panel bridge-panel bridge-workspace-active"
+              : "panel bridge-panel"
+          }
+        >
           <div className="bridge-atmosphere" aria-hidden="true">
             <span className="bridge-orb bridge-orb-a" />
             <span className="bridge-orb bridge-orb-b" />
@@ -2107,9 +2754,32 @@ function App() {
 
           {bridgeMessage ? <p className="note">{bridgeMessage}</p> : null}
 
+          {bridgeWorkspaceView ? (
+            <div className="bridge-workspace-toolbar">
+              <button type="button" onClick={closeBridgeWorkspaceView}>
+                Назад к мостику
+              </button>
+              <p>Режим фокуса: {bridgeWorkspaceView}</p>
+            </div>
+          ) : null}
+
           <div className="bridge-live-layout">
-            <article className="bridge-card">
-              <h3>Pre-Flight Симуляция</h3>
+            <article
+              className="bridge-card"
+              data-bridge-view="preflight"
+              data-active={bridgeWorkspaceView === "preflight" ? "true" : "false"}
+            >
+              <div className="bridge-card-head">
+                <h3>Pre-Flight Симуляция</h3>
+                <button
+                  type="button"
+                  className="bridge-card-expand"
+                  onClick={() => toggleBridgeWorkspaceView("preflight")}
+                  aria-label="Развернуть Pre-Flight на весь экран"
+                >
+                  {bridgeWorkspaceView === "preflight" ? "×" : "⤢"}
+                </button>
+              </div>
               <p className="bridge-card-lead">
                 C4-ready оценка перед запуском операции: риск, вероятность успеха
                 и ожидаемый PnL.
@@ -2205,8 +2875,22 @@ function App() {
               ) : null}
             </article>
 
-            <article className="bridge-card">
-              <h3>Live Alerts</h3>
+            <article
+              className="bridge-card"
+              data-bridge-view="alerts"
+              data-active={bridgeWorkspaceView === "alerts" ? "true" : "false"}
+            >
+              <div className="bridge-card-head">
+                <h3>Live Alerts</h3>
+                <button
+                  type="button"
+                  className="bridge-card-expand"
+                  onClick={() => toggleBridgeWorkspaceView("alerts")}
+                  aria-label="Развернуть Live Alerts на весь экран"
+                >
+                  {bridgeWorkspaceView === "alerts" ? "×" : "⤢"}
+                </button>
+              </div>
               <p className="bridge-card-lead">
                 Ролевой поток событий с подтверждением (ack) для оперативного
                 цикла.
@@ -2242,8 +2926,22 @@ function App() {
               </div>
             </article>
 
-            <article className="bridge-card">
-              <h3>Audit Trail</h3>
+            <article
+              className="bridge-card"
+              data-bridge-view="audit"
+              data-active={bridgeWorkspaceView === "audit" ? "true" : "false"}
+            >
+              <div className="bridge-card-head">
+                <h3>Audit Trail</h3>
+                <button
+                  type="button"
+                  className="bridge-card-expand"
+                  onClick={() => toggleBridgeWorkspaceView("audit")}
+                  aria-label="Развернуть Audit Trail на весь экран"
+                >
+                  {bridgeWorkspaceView === "audit" ? "×" : "⤢"}
+                </button>
+              </div>
               <p className="bridge-card-lead">
                 История pre-flight и подтверждений alert по текущей роли Captain
                 Bridge.
@@ -2315,23 +3013,217 @@ function App() {
           </div>
 
           <div className="bridge-grid-layout">
-            <article className="bridge-card">
-              <h3>Карта И Пресеты Ролей</h3>
+            <article
+              className="bridge-card"
+              data-bridge-view="map"
+              data-active={bridgeWorkspaceView === "map" ? "true" : "false"}
+            >
+              <div className="bridge-card-head">
+                <h3>2D Карта: Presets + Layers</h3>
+                <button
+                  type="button"
+                  className="bridge-card-expand"
+                  onClick={() => toggleBridgeWorkspaceView("map")}
+                  aria-label="Развернуть карту на весь экран"
+                >
+                  {bridgeWorkspaceView === "map" ? "×" : "⤢"}
+                </button>
+              </div>
               <p className="bridge-card-lead">
-                Режим 2D top-down, все пространство Star Atlas, read-only карта в
-                MVP с профильными пресетами.
+                Тактический слой мостика: role-presets и ручное управление
+                слоями поверх live-карты с конфигурацией под конкретную задачу.
               </p>
-              <ul className="bridge-list">
-                {bridgeMapPresets.map((preset) => (
-                  <li key={preset.name}>
-                    <strong>{preset.name}:</strong> {preset.payload}
-                  </li>
+
+              <div className="bridge-map-presets" role="group" aria-label="Map presets">
+                {bridgeMapPresets
+                  .filter((preset) => bridgeVisiblePresetNames.includes(preset.name))
+                  .map((preset) => (
+                    <button
+                      key={preset.name}
+                      type="button"
+                      className={
+                        preset.name === bridgeMapPreset
+                          ? "bridge-map-preset active"
+                          : "bridge-map-preset"
+                      }
+                      onClick={() => applyBridgePreset(preset.name)}
+                    >
+                      {preset.name}
+                    </button>
+                  ))}
+              </div>
+
+              <p className="bridge-runtime-note">{bridgePresetSummary}</p>
+
+              <p className="bridge-runtime-note">
+                Live sync: {bridgeLiveMapLoading ? "обновление..." : "online"}
+                {bridgeLiveMap?.generatedAt
+                  ? ` · ${new Date(bridgeLiveMap.generatedAt).toLocaleTimeString("ru-RU")}`
+                  : ""}
+                {bridgeLiveMap?.source ? ` · source ${bridgeLiveMap.source}` : ""}
+                {bridgeLiveMap?.activityScore
+                  ? ` · activity ${bridgeLiveMap.activityScore}/100`
+                  : ""}
+                {bridgeLiveMapError ? ` · error: ${bridgeLiveMapError}` : ""}
+              </p>
+
+              {bridgeConnectedWalletMetrics ? (
+                <p className="bridge-runtime-note">
+                  SAGE кошельков подключено: {bridgeConnectedWalletMetrics.totalConnectedWallets}
+                  {` · MUD ${bridgeConnectedWalletMetrics.byFaction.MUD}`}
+                  {` · ONI ${bridgeConnectedWalletMetrics.byFaction.ONI}`}
+                  {` · USTUR ${bridgeConnectedWalletMetrics.byFaction.USTUR}`}
+                </p>
+              ) : null}
+
+              <p className="bridge-runtime-note">
+                Активных игроков SAGE за сегодня: {bridgeSageActiveProfilesMetric?.activeProfiles ?? "n/a"}
+                {bridgeSageActiveProfilesMetric?.source === "upstream"
+                  ? " · realtime"
+                  : bridgeSageActiveProfilesMetric?.source === "estimated"
+                    ? " · estimate"
+                    : " · source unavailable"}
+              </p>
+
+              <div className="bridge-layer-switches" role="group" aria-label="Map layers">
+                {bridgeLayerOrder.map((layer) => (
+                  <label key={layer} className="bridge-layer-toggle">
+                    <input
+                      type="checkbox"
+                      checked={bridgeMapLayers[layer]}
+                      onChange={() => toggleBridgeLayer(layer)}
+                    />
+                    <span>{bridgeLayerLabels[layer]}</span>
+                  </label>
                 ))}
-              </ul>
+              </div>
+
+              <div
+                className="bridge-map-shell"
+                onClick={() => toggleBridgeWorkspaceView("map")}
+                role="button"
+                tabIndex={0}
+                aria-label="Открыть карту в полноэкранном режиме"
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault();
+                    toggleBridgeWorkspaceView("map");
+                  }
+                }}
+              >
+                <svg
+                  className="bridge-map-canvas"
+                  viewBox="0 0 1000 500"
+                  role="img"
+                  aria-label="Captain Bridge tactical map"
+                >
+                  <defs>
+                    <linearGradient id="routeGradient" x1="0" y1="0" x2="1" y2="0">
+                      <stop offset="0%" stopColor="#6ee7f7" stopOpacity="0.9" />
+                      <stop offset="100%" stopColor="#8ca8ff" stopOpacity="0.85" />
+                    </linearGradient>
+                  </defs>
+
+                  <image
+                    href={bridgeMapImageUrl}
+                    x="0"
+                    y="0"
+                    width="1000"
+                    height="500"
+                    preserveAspectRatio="xMidYMid slice"
+                  />
+                  <rect x="0" y="0" width="1000" height="500" fill="rgba(0, 0, 0, 0.3)" />
+
+                  {bridgeMapLayers.riskZones
+                    ? bridgeRiskZones.map((zone) => (
+                        <circle
+                          key={zone.id}
+                          cx={zone.x}
+                          cy={zone.y}
+                          r={zone.r}
+                          className="bridge-map-risk"
+                        />
+                      ))
+                    : null}
+
+                  {bridgeMapLayers.routes
+                    ? bridgeMapRoutes.map((route) => (
+                        <polyline
+                          key={route.id}
+                          points={route.points}
+                          fill="none"
+                          stroke="url(#routeGradient)"
+                          strokeWidth="3"
+                          strokeDasharray="7 6"
+                          className="bridge-map-route"
+                        />
+                      ))
+                    : null}
+
+                  {bridgeMapLayers.resources
+                    ? bridgeMapResources.map((resource) => (
+                        <g key={resource.id} transform={`translate(${resource.x},${resource.y})`}>
+                          <rect
+                            x="-8"
+                            y="-8"
+                            width="16"
+                            height="16"
+                            rx="3"
+                            className="bridge-map-resource"
+                          />
+                          <text x="12" y="4" className="bridge-map-label">
+                            {resource.label}
+                          </text>
+                        </g>
+                      ))
+                    : null}
+
+                  {bridgeMapLayers.enemies
+                    ? bridgeMapEnemies.map((enemy) => (
+                        <g key={enemy.id} transform={`translate(${enemy.x},${enemy.y})`}>
+                          <polygon points="0,-10 10,10 -10,10" className="bridge-map-enemy" />
+                          <text x="12" y="4" className="bridge-map-label">
+                            {enemy.label}
+                          </text>
+                        </g>
+                      ))
+                    : null}
+
+                  {bridgeMapLayers.fleets
+                    ? bridgeMapFleets.map((fleet) => (
+                        <g key={fleet.id} transform={`translate(${fleet.x},${fleet.y})`}>
+                          <circle r="7" className="bridge-map-fleet" />
+                          <text x="11" y="4" className="bridge-map-label">
+                            {fleet.label}
+                          </text>
+                        </g>
+                      ))
+                    : null}
+                </svg>
+
+                <p className="bridge-map-meta">
+                  Активные слои: {bridgeLayerOrder.filter((layer) => bridgeMapLayers[layer]).length}/
+                  {bridgeLayerOrder.length}
+                </p>
+              </div>
             </article>
 
-            <article className="bridge-card">
-              <h3>Операции MVP 2</h3>
+            <article
+              className="bridge-card"
+              data-bridge-view="ops"
+              data-active={bridgeWorkspaceView === "ops" ? "true" : "false"}
+            >
+              <div className="bridge-card-head">
+                <h3>Операции MVP 2</h3>
+                <button
+                  type="button"
+                  className="bridge-card-expand"
+                  onClick={() => toggleBridgeWorkspaceView("ops")}
+                  aria-label="Развернуть операции на весь экран"
+                >
+                  {bridgeWorkspaceView === "ops" ? "×" : "⤢"}
+                </button>
+              </div>
               <p className="bridge-card-lead">
                 Контур запуска с pre-flight проверкой: ETA, риск,
                 профит/убыток, вероятность успеха.
@@ -2343,8 +3235,22 @@ function App() {
               </ul>
             </article>
 
-            <article className="bridge-card">
-              <h3>Уведомления И Эскалации</h3>
+            <article
+              className="bridge-card"
+              data-bridge-view="notify"
+              data-active={bridgeWorkspaceView === "notify" ? "true" : "false"}
+            >
+              <div className="bridge-card-head">
+                <h3>Уведомления И Эскалации</h3>
+                <button
+                  type="button"
+                  className="bridge-card-expand"
+                  onClick={() => toggleBridgeWorkspaceView("notify")}
+                  aria-label="Развернуть уведомления на весь экран"
+                >
+                  {bridgeWorkspaceView === "notify" ? "×" : "⤢"}
+                </button>
+              </div>
               <p className="bridge-card-lead">
                 Приоритетная модель Critical/High/Normal/Info с ролевой
                 доставкой и подтверждением для критичных кейсов.
@@ -2356,8 +3262,22 @@ function App() {
               </ul>
             </article>
 
-            <article className="bridge-card">
-              <h3>Доступ И Безопасность</h3>
+            <article
+              className="bridge-card"
+              data-bridge-view="security"
+              data-active={bridgeWorkspaceView === "security" ? "true" : "false"}
+            >
+              <div className="bridge-card-head">
+                <h3>Доступ И Безопасность</h3>
+                <button
+                  type="button"
+                  className="bridge-card-expand"
+                  onClick={() => toggleBridgeWorkspaceView("security")}
+                  aria-label="Развернуть безопасность на весь экран"
+                >
+                  {bridgeWorkspaceView === "security" ? "×" : "⤢"}
+                </button>
+              </div>
               <p className="bridge-card-lead">
                 Приватный контур одной ДАК с аудитом, allowlist и
                 управлением сессиями.
@@ -2369,8 +3289,22 @@ function App() {
               </ul>
             </article>
 
-            <article className="bridge-card bridge-card-wide">
-              <h3>MVP 2 Readiness</h3>
+            <article
+              className="bridge-card bridge-card-wide"
+              data-bridge-view="readiness"
+              data-active={bridgeWorkspaceView === "readiness" ? "true" : "false"}
+            >
+              <div className="bridge-card-head">
+                <h3>MVP 2 Readiness</h3>
+                <button
+                  type="button"
+                  className="bridge-card-expand"
+                  onClick={() => toggleBridgeWorkspaceView("readiness")}
+                  aria-label="Развернуть readiness на весь экран"
+                >
+                  {bridgeWorkspaceView === "readiness" ? "×" : "⤢"}
+                </button>
+              </div>
               <p className="bridge-card-lead">
                 Операционный baseline из QA: что должно быть в первом рабочем
                 релизе мостика.
@@ -2417,6 +3351,29 @@ function App() {
               <p className="wallet-auth-subtitle">
                 Подпиши challenge в кошельке, чтобы создать/подтвердить аккаунт и открыть сессию.
               </p>
+              <div className="wallet-auth-dev-login">
+                <label htmlFor="dev-admin-password">Dev Admin Login (пароль, без кошелька)</label>
+                <div className="wallet-auth-dev-login-row">
+                  <input
+                    id="dev-admin-password"
+                    type="password"
+                    value={devAdminPassword}
+                    onChange={(event) => setDevAdminPassword(event.target.value)}
+                    placeholder="Пароль администратора (dev-only)"
+                    autoComplete="current-password"
+                  />
+                  <button
+                    type="button"
+                    className="wallet-auth-secondary"
+                    onClick={() => {
+                      void loginDevAdminByPassword();
+                    }}
+                    disabled={walletAuthBusy}
+                  >
+                    {walletAuthBusy ? "Вход..." : "Войти как Admin"}
+                  </button>
+                </div>
+              </div>
               <div className="wallet-auth-actions">
                 <button
                   type="button"
@@ -2447,6 +3404,22 @@ function App() {
               ) : (
                 <p className="wallet-auth-state">Сессия не активна.</p>
               )}
+
+              {walletAuthUser ? (
+                <p
+                  className={
+                    bridgeAccessActive
+                      ? "wallet-auth-state wallet-auth-state-access-ok"
+                      : "wallet-auth-state wallet-auth-state-access-denied"
+                  }
+                >
+                  Captain&apos;s Bridge: {bridgeAccessChecked
+                    ? bridgeAccessActive
+                      ? "доступ есть"
+                      : "доступ не выдан"
+                    : "проверка доступа..."}
+                </p>
+              ) : null}
 
               {walletAuthMessage ? <p className="wallet-auth-message">{walletAuthMessage}</p> : null}
             </div>
@@ -2853,6 +3826,73 @@ function App() {
                 </div>
               </form>
 
+              {walletAuthUser?.isAdmin ? (
+                <div className="market-settings-form">
+                  <h3 className="market-subtitle">Captain&apos;s Bridge: Доступы</h3>
+                  <label htmlFor="bridge-access-wallet">Кошелек для выдачи доступа</label>
+                  <input
+                    id="bridge-access-wallet"
+                    value={bridgeAccessWalletInput}
+                    onChange={(event) => setBridgeAccessWalletInput(event.target.value)}
+                    placeholder="Solana wallet address"
+                  />
+
+                  <div className="market-actions">
+                    <button
+                      type="button"
+                      disabled={bridgeAccessBusy}
+                      onClick={() => {
+                        void grantBridgeAccess();
+                      }}
+                    >
+                      {bridgeAccessBusy ? "Обработка..." : "Выдать Доступ"}
+                    </button>
+                    <button
+                      type="button"
+                      disabled={bridgeAccessBusy || !walletAuthToken}
+                      onClick={() => {
+                        if (walletAuthToken) {
+                          void loadBridgeAccessList(walletAuthToken);
+                        }
+                      }}
+                    >
+                      Обновить Список
+                    </button>
+                  </div>
+
+                  {bridgeAccessMessage ? <p className="note">{bridgeAccessMessage}</p> : null}
+
+                  <div className="bridge-audit-list">
+                    {bridgeAccessList.map((entry) => (
+                      <div key={entry.wallet} className="bridge-audit-item">
+                        <p className="bridge-audit-title">
+                          {entry.wallet.slice(0, 6)}...{entry.wallet.slice(-6)}
+                        </p>
+                        <p className="bridge-alert-time">
+                          Выдан: {new Date(entry.grantedAt).toLocaleString("ru-RU")}
+                        </p>
+                        <p className="bridge-alert-time">
+                          Кем: {entry.grantedBy.slice(0, 6)}...{entry.grantedBy.slice(-6)}
+                        </p>
+                        <button
+                          type="button"
+                          disabled={bridgeAccessBusy || entry.wallet === walletAuthUser.wallet}
+                          onClick={() => {
+                            void revokeBridgeAccess(entry.wallet);
+                          }}
+                        >
+                          Отозвать
+                        </button>
+                      </div>
+                    ))}
+
+                    {!bridgeAccessList.length ? (
+                      <p className="placeholder">Список доступов пуст.</p>
+                    ) : null}
+                  </div>
+                </div>
+              ) : null}
+
               {settingsMessage ? <p className="note">{settingsMessage}</p> : null}
               {marketSettings ? (
                 <p className="timestamp">
@@ -2941,6 +3981,83 @@ function App() {
           ) : (
             <p className="placeholder">
               Нажмите «Обновить Обзор», чтобы собрать свежие сигналы по проекту.
+            </p>
+          )}
+        </section>
+      ) : null}
+
+      {activeTab === "resources" ? (
+        <section className="panel resources-panel">
+          <h2>Добыча Ресурсов SAGE</h2>
+          <p className="subtitle">
+            Реальное время активности добычи по ресурсам и фракциям. Счетчики сбрасываются в 00:00 UTC.
+          </p>
+
+          <div className="table-toolbar">
+            <button
+              type="button"
+              disabled={miningLoading}
+              onClick={() => {
+                void loadMiningMetrics();
+              }}
+            >
+              {miningLoading ? "Обновление..." : "Обновить Данные"}
+            </button>
+          </div>
+
+          {miningError ? <p className="error">{miningError}</p> : null}
+
+          {miningMetrics ? (
+            <>
+              {miningMetrics.resources && miningMetrics.resources.length > 0 ? (
+                <div className="resources-table">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Ресурс</th>
+                        <th>Всего Флотов</th>
+                        <th>MUD</th>
+                        <th>ONI</th>
+                        <th>USTUR</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {miningMetrics.resources.map((resource: any, idx: number) => (
+                        <tr key={idx}>
+                          <td className="resource-name">{resource.resource}</td>
+                          <td className="resource-total">
+                            <strong>{resource.totalFleets}</strong>
+                          </td>
+                          <td className="faction mud">{resource.byFaction.MUD || 0}</td>
+                          <td className="faction oni">{resource.byFaction.ONI || 0}</td>
+                          <td className="faction ustur">{resource.byFaction.USTUR || 0}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <p className="placeholder">Нет активной добычи.</p>
+              )}
+
+              <div className="resources-meta">
+                <p className="timestamp">
+                  Обновлено: {new Date(miningMetrics.updatedAt).toLocaleString("ru-RU")}
+                </p>
+                <p className="reset-info">
+                  Следующий сброс: {new Date(miningMetrics.resetAt).toLocaleString("ru-RU", {
+                    hour: "2-digit",
+                    minute: "2-digit",
+                    second: "2-digit",
+                    timeZone: "UTC",
+                  })}{" "}
+                  UTC
+                </p>
+              </div>
+            </>
+          ) : (
+            <p className="placeholder">
+              Нажмите «Обновить Данные», чтобы загрузить метрики добычи SAGE.
             </p>
           )}
         </section>
