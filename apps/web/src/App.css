@@ -1777,3 +1777,102 @@ th {
 .craft-table td:nth-child(4) {
   min-width: 260px;
 }
+
+/* Reliability Indicators */
+
+.source-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  margin-left: 8px;
+}
+
+.source-badge-sage-onchain {
+  background: rgba(129, 246, 181, 0.15);
+  color: #81f6b5;
+  border: 1px solid rgba(129, 246, 181, 0.4);
+}
+
+.source-badge-rydn-fallback {
+  background: rgba(255, 185, 102, 0.15);
+  color: #ffb966;
+  border: 1px solid rgba(255, 185, 102, 0.4);
+}
+
+.source-warning {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  border-left: 3px solid #ffb966;
+  border-radius: 8px;
+  background: rgba(255, 185, 102, 0.12);
+  color: rgba(255, 223, 184, 0.98);
+  font-size: 13px;
+}
+
+.source-warning::before {
+  content: "⚠";
+  font-weight: 600;
+  flex-shrink: 0;
+}
+
+.source-warning strong {
+  margin-left: 4px;
+  color: #ffd9a6;
+}
+
+.tier-cell {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.verified-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  background: rgba(129, 246, 181, 0.15);
+  color: #81f6b5;
+  border: 1px solid rgba(129, 246, 181, 0.3);
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.pending-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  background: rgba(180, 180, 180, 0.1);
+  color: rgba(180, 180, 180, 0.8);
+  border: 1px dashed rgba(180, 180, 180, 0.3);
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.craft-verified {
+  background: rgba(129, 246, 181, 0.04);
+}
+
+.craft-verified:hover {
+  background: rgba(129, 246, 181, 0.08);
+}
+
+.craft-pending {
+  background: rgba(180, 180, 180, 0.02);
+}
+
+.craft-pending:hover {
+  background: rgba(180, 180, 180, 0.05);
+}

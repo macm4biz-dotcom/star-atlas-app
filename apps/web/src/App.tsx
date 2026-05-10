@@ -783,6 +783,7 @@ function App() {
         recipeDraft: item.recipeDraft,
         output: item.output,
         status: item.status,
+        verified: item.verified,
       })),
     [craftCatalogItems],
   );
@@ -4163,7 +4164,10 @@ function App() {
           {miningMetrics ? (
             <>
               <p className="timestamp">
-                Источник: <strong>{miningMetrics.source || "unknown"}</strong>
+                Источник: 
+                <strong className={`source-badge source-badge-${miningMetrics.source || "unknown"}`}>
+                  {miningMetrics.source === "sage-onchain" ? "✓ On-chain" : miningMetrics.source === "rydn-fallback" ? "⚠ Fallback" : miningMetrics.source || "unknown"}
+                </strong>
               </p>
               {miningMetrics.source === "rydn-fallback" ? (
                 <p className="source-warning">
@@ -4283,10 +4287,18 @@ function App() {
                 </thead>
                 <tbody>
                   {craftReferenceRows.map((row) => (
-                    <tr key={`${row.category}-${row.item}`}>
+                    <tr key={`${row.category}-${row.item}`} className={row.verified ? "craft-verified" : "craft-pending"}>
                       <td>{row.category}</td>
                       <td className="resource-name">{row.item}</td>
-                      <td>{row.tier}</td>
+                      <td>
+                        <div className="tier-cell">
+                          {row.tier ? (
+                            <span className="verified-badge">✓ {row.tier}</span>
+                          ) : (
+                            <span className="pending-badge">⊘ pending</span>
+                          )}
+                        </div>
+                      </td>
                       <td>{row.recipeDraft}</td>
                       <td>{row.output}</td>
                       <td>
