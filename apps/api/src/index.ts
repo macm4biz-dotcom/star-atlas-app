@@ -33,6 +33,11 @@ const PORT = Number(process.env.PORT || process.env.API_PORT || 4100);
 const HOST = process.env.HOST || process.env.API_HOST || "0.0.0.0";
 const SOLANA_RPC_URL =
   process.env.SOLANA_RPC_URL || "https://api.mainnet-beta.solana.com";
+
+const PLATFORM_FEE_WALLET =
+  process.env.PLATFORM_FEE_WALLET || "YQmg9nTsvVLUgtj35pY8WUPRVGHaz7KfmaCgPuS6bwY";
+const PLATFORM_FEE_BPS = 100; // 1% = 100 basis points
+const USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
 const API_SRC_DIR = dirname(fileURLToPath(import.meta.url));
 const API_ROOT_DIR = resolve(API_SRC_DIR, "..");
 
@@ -202,6 +207,9 @@ type MarketListing = {
   buyerWallet?: string;
   status: ListingStatus;
   note?: string;
+  mint?: string;
+  image?: string;
+  txSignature?: string;
   createdAt: string;
 };
 
@@ -2882,6 +2890,8 @@ app.post<{
     paymentToken?: "USDC" | "ATLAS" | "SOL";
     sellerWallet?: string;
     note?: string;
+    mint?: string;
+    image?: string;
   };
 }>("/api/market/listings", async (request, reply) => {
   const session = requireWalletAuthSession(request, reply);
@@ -2889,10 +2899,10 @@ app.post<{
     return;
   }
 
-  const { itemName, itemClass, quantity, priceUsd, paymentToken, sellerWallet, note } =
+  const { itemName, itemClass, quantity, priceUsd, paymentToken, sellerWallet, note, mint, image } =
     request.body || {};
 
-  if (!itemName || !itemClass || !quantity || !priceUsd || !paymentToken || !sellerWallet) {
+  if (!itemName || !itemClass || !quantity || !priceUsd || !sellerWallet) {
     return reply.code(400).send({ error: "Missing required listing fields" });
   }
 
@@ -2907,12 +2917,15 @@ app.post<{
     itemClass,
     quantity: Number(quantity),
     priceUsd: Number(priceUsd),
-    paymentToken,
+    paymentToken: paymentToken ?? "USDC",
     sellerWallet: session.wallet,
     note: note ? String(note).trim() : undefined,
     status: "active",
     createdAt: new Date().toISOString(),
   };
+
+  if (mint) listing.mint = String(mint).trim();
+  if (image) listing.image = String(image).trim();
 
   marketListings.unshift(listing);
   return reply.code(201).send(listing);
@@ -2920,7 +2933,7 @@ app.post<{
 
 app.post<{
   Params: { id: string };
-  Body: { buyerWallet?: string };
+  Body: { buyerWallet?: string; txSignature?: string };
 }>("/api/market/listings/:id/buy", async (request, reply) => {
   const session = requireWalletAuthSession(request, reply);
   if (!session) {
@@ -2951,10 +2964,13 @@ app.post<{
   listing.status = "sold";
   listing.buyerWallet = buyerWallet;
 
+  const txSignature = String(request.body?.txSignature || "").trim();
+  if (txSignature) listing.txSignature = txSignature;
+
   return {
     success: true,
     listing,
-    message: "Purchase simulated successfully",
+    message: "Purchase recorded successfully",
   };
 });
 
@@ -3259,7 +3275,312 @@ app.post<{
   };
 });
 
+// ── Bridge: Admin wallet assets ──────────────────────────────────────────────
+const ATLAS_MINT = "ATLASXmbPQxBUYbxPsV97usA3fPQYEqzQBUHgiFCUsXx";
+const POLIS_MINT = "poLisWXnNRwC6oBu1vHiuKQzFjGL4XDSu4g9qjz9qVk";
+const TOKEN_PROGRAM_ID = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
+const TOKEN_2022_PROGRAM_ID = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb";
+
+app.get("/api/bridge/admin/wallet-assets", async (request, reply) => {
+  const session = requireWalletAuthSession(request, reply);
+  if (!session) return;
+
+  if (!isAdminWallet(session.wallet)) {
+    reply.code(403).send({ error: "Admin access required" });
+    return;
+  }
+
+  const walletPubkey = new PublicKey(session.wallet);
+  const connection = new Connection(SOLANA_RPC_URL, "confirmed");
+
+  let solBalance = 0;
+  let atlasBalance = 0;
+  let polisBalance = 0;
+  let nftCount = 0;
+  let rpcError: string | null = null;
+
+  try {
+    // Two sequential calls to stay under rate limits:
+    // 1) SOL balance
+    const lamports = await connection.getBalance(walletPubkey);
+    solBalance = lamports / 1e9;
+
+    // 2) All SPL token accounts in one call → derive ATLAS, POLIS, NFT count
+    const allTokenAccounts = await connection.getParsedTokenAccountsByOwner(
+      walletPubkey,
+      { programId: new PublicKey(TOKEN_PROGRAM_ID) },
+    );
+
+    for (const acc of allTokenAccounts.value) {
+      const info = acc.account.data.parsed?.info;
+      const tokenAmount = info?.tokenAmount;
+      const mint: string = info?.mint ?? "";
+
+      if (mint === ATLAS_MINT) {
+        atlasBalance = Number(tokenAmount?.uiAmount || 0);
+      } else if (mint === POLIS_MINT) {
+        polisBalance = Number(tokenAmount?.uiAmount || 0);
+      } else if (Number(tokenAmount?.amount) === 1 && Number(tokenAmount?.decimals) === 0) {
+        nftCount++;
+      }
+    }
+  } catch (err) {
+    rpcError = err instanceof Error ? err.message : String(err);
+  }
+
+  return {
+    success: true,
+    wallet: session.wallet,
+    fetchedAt: new Date().toISOString(),
+    rpcError,
+    sol: solBalance,
+    atlas: atlasBalance,
+    polis: polisBalance,
+    nftCount,
+  };
+});
+
+// ── Bridge: Admin wallet NFT list ────────────────────────────────────────────
+const METAPLEX_METADATA_PROGRAM_ID = new PublicKey(
+  "metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s",
+);
+
+const METADATA_BATCH_SIZE = 25; // stay under public RPC rate limits
+const METADATA_BATCH_DELAY_MS = 300;
+
+function sleep(ms: number) {
+  return new Promise<void>((resolve) => setTimeout(resolve, ms));
+}
+
+// ── Star Atlas Galaxy NFT catalog cache ──────────────────────────────────────
+const SA_GALAXY_URL = "https://galaxy.staratlas.com/nfts";
+const SA_GALAXY_TTL_MS = 60 * 60 * 1000; // 1 hour
+
+type SaGalaxyNft = { mint: string; name: string; image: string; media?: { thumbnailUrl?: string } };
+let saGalaxyCache: Map<string, SaGalaxyNft> | null = null;
+let saGalaxyCachedAt = 0;
+
+async function getSaGalaxyMap(): Promise<Map<string, SaGalaxyNft>> {
+  if (saGalaxyCache && Date.now() - saGalaxyCachedAt < SA_GALAXY_TTL_MS) {
+    return saGalaxyCache;
+  }
+  try {
+    const resp = await fetch(SA_GALAXY_URL, { signal: AbortSignal.timeout(10_000) });
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const list = (await resp.json()) as Array<{ mint: string; name: string; image?: string; media?: { thumbnailUrl?: string } }>;
+    const map = new Map<string, SaGalaxyNft>();
+    for (const item of list) {
+      if (item.mint) {
+        map.set(item.mint, {
+          mint: item.mint,
+          name: item.name ?? "",
+          image: item.media?.thumbnailUrl ?? item.image ?? "",
+          media: item.media,
+        });
+      }
+    }
+    saGalaxyCache = map;
+    saGalaxyCachedAt = Date.now();
+    return map;
+  } catch {
+    return saGalaxyCache ?? new Map();
+  }
+}
+
+async function getMetaplexName(
+  connection: Connection,
+  mintPubkeys: PublicKey[],
+): Promise<Map<string, string>> {
+  const result = new Map<string, string>();
+  if (mintPubkeys.length === 0) return result;
+
+  // compute PDAs synchronously (no RPC call)
+  const pdas = await Promise.all(
+    mintPubkeys.map((mint) =>
+      PublicKey.findProgramAddress(
+        [
+          Buffer.from("metadata"),
+          METAPLEX_METADATA_PROGRAM_ID.toBuffer(),
+          mint.toBuffer(),
+        ],
+        METAPLEX_METADATA_PROGRAM_ID,
+      ).then(([pda]) => pda),
+    ),
+  );
+
+  // batch getMultipleAccountsInfo to avoid 429
+  for (let i = 0; i < pdas.length; i += METADATA_BATCH_SIZE) {
+    if (i > 0) await sleep(METADATA_BATCH_DELAY_MS);
+
+    const batchPdas = pdas.slice(i, i + METADATA_BATCH_SIZE);
+    const batchMints = mintPubkeys.slice(i, i + METADATA_BATCH_SIZE);
+
+    let accounts;
+    try {
+      accounts = await connection.getMultipleAccountsInfo(batchPdas);
+    } catch {
+      continue; // skip this batch on error
+    }
+
+    for (let j = 0; j < batchMints.length; j++) {
+      const data = accounts[j]?.data;
+      if (!data || data.length < 69) continue;
+
+      try {
+        // Metaplex metadata v1:
+        // 1 (key) + 32 (update_authority) + 32 (mint) = 65 offset
+        // then 4-byte LE u32 name_length, then name bytes
+        const nameLen = data.readUInt32LE(65);
+        if (nameLen > 0 && nameLen <= 200 && data.length >= 69 + nameLen) {
+          const name = data
+            .subarray(69, 69 + nameLen)
+            .toString("utf8")
+            .replace(/\0/g, "")
+            .trim();
+          if (name) {
+            result.set(batchMints[j].toBase58(), name);
+          }
+        }
+      } catch {
+        // skip unparseable accounts
+      }
+    }
+  }
+
+  return result;
+}
+
+app.get("/api/bridge/admin/wallet-nfts", async (request, reply) => {
+  const session = requireWalletAuthSession(request, reply);
+  if (!session) return;
+
+  if (!isAdminWallet(session.wallet)) {
+    reply.code(403).send({ error: "Admin access required" });
+    return;
+  }
+
+  const connection = new Connection(SOLANA_RPC_URL, "confirmed");
+  const walletPubkey = new PublicKey(session.wallet);
+  let rpcError: string | null = null;
+  const nfts: Array<{ mint: string; name: string | null; image: string | null }> = [];
+
+  try {
+    // fetch SA galaxy catalog and token accounts in parallel
+    const [saMap, tokenAccounts] = await Promise.all([
+      getSaGalaxyMap(),
+      connection.getParsedTokenAccountsByOwner(
+        walletPubkey,
+        { programId: new PublicKey(TOKEN_PROGRAM_ID) },
+      ),
+    ]);
+
+    const nftMints = tokenAccounts.value
+      .filter((acc) => {
+        const info = acc.account.data.parsed?.info?.tokenAmount;
+        return Number(info?.amount) === 1 && Number(info?.decimals) === 0;
+      })
+      .map((acc) => new PublicKey(acc.account.data.parsed?.info?.mint as string));
+
+    // on-chain name fallback only for mints not in SA catalog
+    const unknownMints = nftMints.filter((m) => !saMap.has(m.toBase58()));
+    const onChainNames = await getMetaplexName(connection, unknownMints);
+
+    for (const mint of nftMints) {
+      const mintStr = mint.toBase58();
+      const saEntry = saMap.get(mintStr);
+      nfts.push({
+        mint: mintStr,
+        name: saEntry?.name ?? onChainNames.get(mintStr) ?? null,
+        image: saEntry?.image || null,
+      });
+    }
+
+    // named first, then alphabetical
+    nfts.sort((a, b) => {
+      if (a.name && !b.name) return -1;
+      if (!a.name && b.name) return 1;
+      return (a.name ?? a.mint).localeCompare(b.name ?? b.mint);
+    });
+  } catch (err) {
+    rpcError = err instanceof Error ? err.message : String(err);
+  }
+
+  return {
+    success: true,
+    wallet: session.wallet,
+    fetchedAt: new Date().toISOString(),
+    rpcError,
+    total: nfts.length,
+    nfts,
+  };
+});
+
 const start = async () => {
+  app.get("/api/market/config", async () => {
+    return {
+      platformFeeWallet: PLATFORM_FEE_WALLET,
+      platformFeeBps: PLATFORM_FEE_BPS,
+      usdcMint: USDC_MINT,
+    };
+  });
+
+  app.get("/api/market/wallet-nfts", async (request, reply) => {
+    const session = requireWalletAuthSession(request, reply);
+    if (!session) return;
+
+    const connection = new Connection(SOLANA_RPC_URL, "confirmed");
+    const walletPubkey = new PublicKey(session.wallet);
+    let rpcError: string | null = null;
+    const nfts: Array<{ mint: string; name: string | null; image: string | null }> = [];
+
+    try {
+      const [saMap, tokenAccounts] = await Promise.all([
+        getSaGalaxyMap(),
+        connection.getParsedTokenAccountsByOwner(
+          walletPubkey,
+          { programId: new PublicKey(TOKEN_PROGRAM_ID) },
+        ),
+      ]);
+
+      const nftMints = tokenAccounts.value
+        .filter((acc) => {
+          const info = acc.account.data.parsed?.info?.tokenAmount;
+          return Number(info?.amount) === 1 && Number(info?.decimals) === 0;
+        })
+        .map((acc) => new PublicKey(acc.account.data.parsed?.info?.mint as string));
+
+      const unknownMints = nftMints.filter((m) => !saMap.has(m.toBase58()));
+      const onChainNames = await getMetaplexName(connection, unknownMints);
+
+      for (const mint of nftMints) {
+        const mintStr = mint.toBase58();
+        const saEntry = saMap.get(mintStr);
+        nfts.push({
+          mint: mintStr,
+          name: saEntry?.name ?? onChainNames.get(mintStr) ?? null,
+          image: saEntry?.image || null,
+        });
+      }
+
+      nfts.sort((a, b) => {
+        if (a.name && !b.name) return -1;
+        if (!a.name && b.name) return 1;
+        return (a.name ?? a.mint).localeCompare(b.name ?? b.mint);
+      });
+    } catch (err) {
+      rpcError = err instanceof Error ? err.message : String(err);
+    }
+
+    return {
+      success: true,
+      wallet: session.wallet,
+      fetchedAt: new Date().toISOString(),
+      rpcError,
+      total: nfts.length,
+      nfts,
+    };
+  });
+
   try {
     bridgeAuditStore = await readBridgeAuditEvents();
     walletAuthUsersStore = await readWalletAuthUsers();

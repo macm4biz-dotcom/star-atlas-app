@@ -3,6 +3,7 @@ import type { FormEvent } from "react";
 import { useConnection, useWallet } from "@solana/wallet-adapter-react";
 import { WalletMultiButton } from "@solana/wallet-adapter-react-ui";
 import { PublicKey, Transaction, TransactionInstruction } from "@solana/web3.js";
+import { Buffer } from "buffer";
 import { ApiRequestError, apiRequest } from "./apiClient";
 import "./App.css";
 
@@ -45,10 +46,27 @@ type MarketListing = {
   buyerWallet?: string;
   status: ListingStatus;
   note?: string;
+  mint?: string;
+  image?: string;
+  txSignature?: string;
   createdAt: string;
 };
 
 type BarterStatus = "open" | "accepted" | "declined";
+
+type MarketWalletNft = { mint: string; name: string | null; image: string | null };
+type MarketWalletNftsResponse = {
+  wallet: string;
+  fetchedAt: string;
+  total: number;
+  nfts: MarketWalletNft[];
+  rpcError: string | null;
+};
+type MarketConfig = {
+  platformFeeWallet: string;
+  platformFeeBps: number;
+  usdcMint: string;
+};
 
 type BarterOffer = {
   id: string;
@@ -267,14 +285,6 @@ function parseListInput(input: string) {
   );
 }
 
-function parsePositiveInteger(input: string) {
-  const value = Number(input);
-  if (!Number.isInteger(value) || value <= 0) {
-    return null;
-  }
-  return value;
-}
-
 function parseNonNegativeNumber(input: string) {
   const value = Number(input);
   if (!Number.isFinite(value) || value < 0) {
@@ -306,6 +316,60 @@ function getErrorMessage(error: unknown) {
 
 function isLikelySolanaAddress(address: string) {
   return /^Demo[A-Za-z0-9_-]{2,}$/.test(address) || /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(address);
+}
+
+const SPL_TOKEN_PROGRAM = new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA");
+const ATA_PROGRAM = new PublicKey("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJe1Y");
+const SYSTEM_PROGRAM = new PublicKey("11111111111111111111111111111111");
+
+function getAta(mint: PublicKey, owner: PublicKey): PublicKey {
+  return PublicKey.findProgramAddressSync(
+    [owner.toBytes(), SPL_TOKEN_PROGRAM.toBytes(), mint.toBytes()],
+    ATA_PROGRAM,
+  )[0];
+}
+
+function splTransferInstruction(
+  source: PublicKey,
+  dest: PublicKey,
+  authority: PublicKey,
+  amount: bigint,
+): TransactionInstruction {
+  const amtBytes: number[] = [];
+  let n = amount;
+  for (let i = 0; i < 8; i++) {
+    amtBytes.push(Number(n & 0xffn));
+    n >>= 8n;
+  }
+  return new TransactionInstruction({
+    keys: [
+      { pubkey: source, isSigner: false, isWritable: true },
+      { pubkey: dest, isSigner: false, isWritable: true },
+      { pubkey: authority, isSigner: true, isWritable: false },
+    ],
+    programId: SPL_TOKEN_PROGRAM,
+    data: Buffer.from([3, ...amtBytes]),
+  });
+}
+
+function createAtaIdempotentInstruction(
+  payer: PublicKey,
+  ata: PublicKey,
+  owner: PublicKey,
+  mint: PublicKey,
+): TransactionInstruction {
+  return new TransactionInstruction({
+    keys: [
+      { pubkey: payer, isSigner: true, isWritable: true },
+      { pubkey: ata, isSigner: false, isWritable: true },
+      { pubkey: owner, isSigner: false, isWritable: false },
+      { pubkey: mint, isSigner: false, isWritable: false },
+      { pubkey: SYSTEM_PROGRAM, isSigner: false, isWritable: false },
+      { pubkey: SPL_TOKEN_PROGRAM, isSigner: false, isWritable: false },
+    ],
+    programId: ATA_PROGRAM,
+    data: Buffer.from([1]),
+  });
 }
 
 function App() {
@@ -358,6 +422,12 @@ function App() {
     paymentToken: "USDC" as PaymentToken,
     note: "",
   });
+  const [sellPickerNfts, setSellPickerNfts] = useState<MarketWalletNft[]>([]);
+  const [sellPickerLoading, setSellPickerLoading] = useState(false);
+  const [sellPickerError, setSellPickerError] = useState<string | null>(null);
+  const [sellPickerSearch, setSellPickerSearch] = useState("");
+  const [sellPickerSelected, setSellPickerSelected] = useState<MarketWalletNft | null>(null);
+  const [marketConfig, setMarketConfig] = useState<MarketConfig | null>(null);
   const [barters, setBarters] = useState<BarterOffer[]>([]);
   const [bartersBusy, setBartersBusy] = useState(false);
   const [bartersMessage, setBartersMessage] = useState<string | null>(null);
@@ -857,6 +927,42 @@ function App() {
     }
   };
 
+  const loadSellPickerNfts = async (token: string) => {
+    setSellPickerLoading(true);
+    setSellPickerError(null);
+    try {
+      const data = await apiRequest<MarketWalletNftsResponse>("/api/market/wallet-nfts", {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      setSellPickerNfts(data.nfts);
+    } catch (err) {
+      setSellPickerError(
+        err instanceof Error ? err.message : "Не удалось загрузить NFT из кошелька.",
+      );
+    } finally {
+      setSellPickerLoading(false);
+    }
+  };
+
+  const loadMarketConfig = async () => {
+    try {
+      const data = await apiRequest<MarketConfig>("/api/market/config");
+      setMarketConfig(data);
+    } catch {
+      // optional
+    }
+  };
+
+  const filteredSellPickerNfts = useMemo(() => {
+    const q = sellPickerSearch.trim().toLowerCase();
+    if (!q) return sellPickerNfts;
+    return sellPickerNfts.filter((nft) => {
+      const name = (nft.name ?? "").toLowerCase();
+      const mint = nft.mint.toLowerCase();
+      return name.includes(q) || mint.includes(q);
+    });
+  }, [sellPickerNfts, sellPickerSearch]);
+
   const createListing = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     setListingsMessage(null);
@@ -877,15 +983,8 @@ function App() {
       return;
     }
 
-    const itemName = newListing.itemName.trim();
-    if (!itemName) {
-      setListingsMessage("Укажи название актива.");
-      return;
-    }
-
-    const quantity = parsePositiveInteger(newListing.quantity);
-    if (quantity === null) {
-      setListingsMessage("Количество должно быть целым числом больше 0.");
+    if (!sellPickerSelected) {
+      setListingsMessage("Выбери NFT из списка кошелька.");
       return;
     }
 
@@ -903,13 +1002,15 @@ function App() {
           Authorization: `Bearer ${walletAuthToken}`,
         },
         body: JSON.stringify({
-          itemName,
-          itemClass: newListing.itemClass,
-          quantity,
+          itemName: sellPickerSelected.name ?? sellPickerSelected.mint,
+          itemClass: "NFT",
+          quantity: 1,
           priceUsd,
-          paymentToken: newListing.paymentToken,
+          paymentToken: "USDC",
           sellerWallet,
           note: newListing.note.trim(),
+          mint: sellPickerSelected.mint,
+          image: sellPickerSelected.image ?? undefined,
         }),
       });
 
@@ -921,7 +1022,8 @@ function App() {
         paymentToken: "USDC",
         note: "",
       });
-      setListingsMessage("Лот выставлен на рынок.");
+      setSellPickerSelected(null);
+      setListingsMessage("NFT выставлен на рынок.");
       await loadListings();
     } catch (createError) {
       setListingsMessage("Ошибка создания листинга.");
@@ -929,22 +1031,11 @@ function App() {
     }
   };
 
-  const buyListing = async (listingId: string) => {
+  const buyListing = async (listingId: string, txSignature?: string) => {
     setListingsMessage(null);
 
     if (!walletAuthToken) {
       setListingsMessage("Сначала зарегистрируй и верифицируй кошелек.");
-      return;
-    }
-
-    const buyerWallet = marketWallet.trim();
-    if (!buyerWallet) {
-      setListingsMessage("Для покупки укажи кошелек в разделе Market.");
-      return;
-    }
-
-    if (!isLikelySolanaAddress(buyerWallet)) {
-      setListingsMessage("Некорректный адрес кошелька для покупки.");
       return;
     }
 
@@ -955,14 +1046,79 @@ function App() {
           "Content-Type": "application/json",
           Authorization: `Bearer ${walletAuthToken}`,
         },
-        body: JSON.stringify({ buyerWallet }),
+        body: JSON.stringify({ txSignature }),
       });
 
-      setListingsMessage("Покупка успешно симулирована.");
+      setListingsMessage("Покупка подтверждена.");
       await loadListings();
     } catch (buyError) {
       setListingsMessage("Ошибка покупки лота.");
       console.error(buyError);
+    }
+  };
+
+  const buyListingWithUsdc = async (listing: MarketListing) => {
+    if (!connected || !publicKey || !signTransaction) {
+      setListingsMessage("Подключи кошелек для оплаты USDC.");
+      return;
+    }
+
+    if (!walletAuthToken) {
+      setListingsMessage("Сначала зарегистрируй и верифицируй кошелек.");
+      return;
+    }
+
+    if (listing.sellerWallet === publicKey.toBase58()) {
+      setListingsMessage("Нельзя купить собственный лот.");
+      return;
+    }
+
+    setListingsBusy(true);
+    setListingsMessage("Подготовка USDC транзакции...");
+
+    try {
+      const usdcMint = new PublicKey(
+        marketConfig?.usdcMint ?? "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+      );
+      const platformWallet = new PublicKey(
+        marketConfig?.platformFeeWallet ?? "YQmg9nTsvVLUgtj35pY8WUPRVGHaz7KfmaCgPuS6bwY",
+      );
+      const feeBps = marketConfig?.platformFeeBps ?? 100;
+      const sellerWallet = new PublicKey(listing.sellerWallet);
+
+      const buyerAta = getAta(usdcMint, publicKey);
+      const sellerAta = getAta(usdcMint, sellerWallet);
+      const platformAta = getAta(usdcMint, platformWallet);
+
+      const totalRaw = BigInt(Math.round(listing.priceUsd * 1_000_000));
+      const feeRaw = BigInt(Math.round(Number(totalRaw) * feeBps / 10_000));
+      const sellerRaw = totalRaw - feeRaw;
+
+      const tx = new Transaction();
+      tx.add(createAtaIdempotentInstruction(publicKey, sellerAta, sellerWallet, usdcMint));
+      if (feeRaw > 0n) {
+        tx.add(createAtaIdempotentInstruction(publicKey, platformAta, platformWallet, usdcMint));
+      }
+      tx.add(splTransferInstruction(buyerAta, sellerAta, publicKey, sellerRaw));
+      if (feeRaw > 0n) {
+        tx.add(splTransferInstruction(buyerAta, platformAta, publicKey, feeRaw));
+      }
+
+      tx.feePayer = publicKey;
+      const { blockhash } = await connection.getLatestBlockhash("confirmed");
+      tx.recentBlockhash = blockhash;
+
+      const signed = await signTransaction(tx);
+      const signature = await connection.sendRawTransaction(signed.serialize(), {
+        skipPreflight: false,
+      });
+      await connection.confirmTransaction(signature, "confirmed");
+
+      await buyListing(listing.id, signature);
+    } catch (buyError) {
+      setListingsMessage(`Ошибка оплаты: ${getErrorMessage(buyError)}`);
+    } finally {
+      setListingsBusy(false);
     }
   };
 
@@ -1291,6 +1447,18 @@ function App() {
       void loadListings();
     }
   }, [activeTab, marketSection, listingsClass, listingsSearch, listingsStatus]);
+
+  useEffect(() => {
+    if (activeTab === "market" && marketSection === "trade" && !marketConfig) {
+      void loadMarketConfig();
+    }
+  }, [activeTab, marketSection, marketConfig]);
+
+  useEffect(() => {
+    if (activeTab !== "market" || marketSection !== "trade") return;
+    if (!walletAuthToken) return;
+    void loadSellPickerNfts(walletAuthToken);
+  }, [activeTab, marketSection, walletAuthToken]);
 
   useEffect(() => {
     if (activeTab === "market" && marketSection === "barter") {
@@ -2301,103 +2469,94 @@ function App() {
                 >
                   Обновить Лоты
                 </button>
+                <button
+                  type="button"
+                  disabled={sellPickerLoading || !walletAuthToken}
+                  onClick={() => {
+                    if (walletAuthToken) {
+                      void loadSellPickerNfts(walletAuthToken);
+                    }
+                  }}
+                >
+                  {sellPickerLoading ? "Загрузка NFT..." : "Обновить NFT Кошелька"}
+                </button>
               </div>
 
               {listingsMessage ? <p className="note">{listingsMessage}</p> : null}
 
-              <div className="table-wrap">
-                <table>
-                  <thead>
-                    <tr>
-                      <th>Лот</th>
-                      <th>Класс</th>
-                      <th>Кол-во</th>
-                      <th>Цена</th>
-                      <th>Продавец</th>
-                      <th>Статус</th>
-                      <th>Действие</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {listings.map((listing) => (
-                      <tr key={listing.id}>
-                        <td>{listing.itemName}</td>
-                        <td>{listing.itemClass}</td>
-                        <td>{listing.quantity}</td>
-                        <td>
-                          ${listing.priceUsd.toLocaleString()} {listing.paymentToken}
-                        </td>
-                        <td>{listing.sellerWallet}</td>
-                        <td>{listing.status}</td>
-                        <td>
-                          <button
-                            type="button"
-                            disabled={listing.status !== "active"}
-                            onClick={() => {
-                              void buyListing(listing.id);
-                            }}
-                          >
-                            Купить
-                          </button>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+              <div className="market-listings-grid">
+                {listings.map((listing) => (
+                  <article key={listing.id} className="market-listing-card">
+                    {listing.image ? (
+                      <img className="market-listing-img" src={listing.image} alt={listing.itemName} loading="lazy" />
+                    ) : (
+                      <div className="market-listing-img market-listing-img-placeholder" />
+                    )}
+                    <div className="market-listing-body">
+                      <h4>{listing.itemName}</h4>
+                      <p className="market-listing-meta">{listing.itemClass} · {listing.status}</p>
+                      <p className="market-listing-price">{listing.priceUsd.toLocaleString("ru-RU", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USDC</p>
+                      <p className="market-listing-wallet">Продавец: {listing.sellerWallet.slice(0, 4)}...{listing.sellerWallet.slice(-4)}</p>
+                      {listing.status === "sold" && listing.txSignature ? (
+                        <a href={`https://solscan.io/tx/${listing.txSignature}`} target="_blank" rel="noreferrer">Tx в Solscan</a>
+                      ) : null}
+                      <button
+                        type="button"
+                        disabled={listing.status !== "active" || listingsBusy}
+                        onClick={() => {
+                          void buyListingWithUsdc(listing);
+                        }}
+                      >
+                        Купить за USDC
+                      </button>
+                    </div>
+                  </article>
+                ))}
               </div>
 
               <h3 className="market-subtitle">Выставить На Продажу</h3>
               <form className="market-settings-form" onSubmit={createListing}>
-                <label htmlFor="new-listing-name">Название актива</label>
+                <label htmlFor="sell-picker-search">Поиск NFT в кошельке</label>
                 <input
-                  id="new-listing-name"
-                  value={newListing.itemName}
-                  onChange={(event) =>
-                    setNewListing((current) => ({
-                      ...current,
-                      itemName: event.target.value,
-                    }))
-                  }
-                  required
+                  id="sell-picker-search"
+                  value={sellPickerSearch}
+                  onChange={(event) => setSellPickerSearch(event.target.value)}
+                  placeholder="Название или mint"
                 />
 
+                {sellPickerError ? <p className="error">{sellPickerError}</p> : null}
+
+                <div className="market-wallet-nft-grid">
+                  {filteredSellPickerNfts.map((nft) => {
+                    const selected = sellPickerSelected?.mint === nft.mint;
+                    return (
+                      <button
+                        type="button"
+                        key={nft.mint}
+                        className={selected ? "market-wallet-nft active" : "market-wallet-nft"}
+                        onClick={() => {
+                          setSellPickerSelected(nft);
+                        }}
+                      >
+                        {nft.image ? (
+                          <img className="market-wallet-nft-img" src={nft.image} alt={nft.name ?? nft.mint} loading="lazy" />
+                        ) : (
+                          <div className="market-wallet-nft-img market-wallet-nft-img-placeholder" />
+                        )}
+                        <span className="market-wallet-nft-name">{nft.name ?? "Unknown"}</span>
+                        <span className="market-wallet-nft-mint">{nft.mint.slice(0, 4)}...{nft.mint.slice(-4)}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+
+                {sellPickerSelected ? (
+                  <p className="note">Выбран NFT: <strong>{sellPickerSelected.name ?? sellPickerSelected.mint}</strong></p>
+                ) : (
+                  <p className="note">Выбери NFT из кошелька перед созданием ордера.</p>
+                )}
+
                 <div className="market-grid-3">
-                  <div>
-                    <label htmlFor="new-listing-class">Класс</label>
-                    <select
-                      id="new-listing-class"
-                      value={newListing.itemClass}
-                      onChange={(event) =>
-                        setNewListing((current) => ({
-                          ...current,
-                          itemClass: event.target.value as FleetAsset["class"],
-                        }))
-                      }
-                    >
-                      <option value="Ship">Ship</option>
-                      <option value="Crew">Crew</option>
-                      <option value="Resource">Resource</option>
-                      <option value="NFT">NFT</option>
-                    </select>
-                  </div>
-
-                  <div>
-                    <label htmlFor="new-listing-qty">Количество</label>
-                    <input
-                      id="new-listing-qty"
-                      type="number"
-                      min="1"
-                      value={newListing.quantity}
-                      onChange={(event) =>
-                        setNewListing((current) => ({
-                          ...current,
-                          quantity: event.target.value,
-                        }))
-                      }
-                      required
-                    />
-                  </div>
-
                   <div>
                     <label htmlFor="new-listing-price">Цена USD</label>
                     <input
@@ -2417,21 +2576,7 @@ function App() {
                   </div>
                 </div>
 
-                <label htmlFor="new-listing-token">Токен оплаты</label>
-                <select
-                  id="new-listing-token"
-                  value={newListing.paymentToken}
-                  onChange={(event) =>
-                    setNewListing((current) => ({
-                      ...current,
-                      paymentToken: event.target.value as PaymentToken,
-                    }))
-                  }
-                >
-                  <option value="USDC">USDC</option>
-                  <option value="ATLAS">ATLAS</option>
-                  <option value="SOL">SOL</option>
-                </select>
+                <p className="note">Оплата только в USDC. Комиссия платформы: {(marketConfig?.platformFeeBps ?? 100) / 100}%.</p>
 
                 <label htmlFor="new-listing-note">Комментарий</label>
                 <input
@@ -2446,7 +2591,7 @@ function App() {
                   placeholder="Опционально"
                 />
 
-                <button type="submit">Выставить Лот</button>
+                <button type="submit" disabled={!sellPickerSelected || listingsBusy}>Выставить NFT за USDC</button>
               </form>
             </>
           ) : null}
