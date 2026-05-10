@@ -107,7 +107,7 @@ export async function apiRequest<T>(input: RequestInfo | URL, init?: RequestInit
   for (let attempt = 1; attempt <= API_REQUEST_MAX_ATTEMPTS; attempt += 1) {
     const { signal, cleanup } = createTimeoutSignal(
       API_REQUEST_TIMEOUT_MS,
-      init?.signal,
+      init?.signal ?? undefined,
     );
 
     try {
