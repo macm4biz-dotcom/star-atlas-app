@@ -253,6 +253,7 @@ type MiningResourceData = {
   resource: string;
   totalFleets: number;
   totalMined?: string;
+  dailyMined?: string;
   resourceHardness?: number;
   averageSystemRichness?: number;
   byFaction: {
@@ -4061,6 +4062,7 @@ function App() {
                         <th>Ресурс</th>
                         <th>Всего Флотов</th>
                         <th>Total Mined</th>
+                        <th>За сутки</th>
                         <th>Hardness</th>
                         <th>Avg Richness</th>
                         <th>MUD</th>
@@ -4078,6 +4080,7 @@ function App() {
                           <td>
                             {formatIntegerString(resource.totalMined)}
                           </td>
+                          <td>{formatIntegerString(resource.dailyMined)}</td>
                           <td>{resource.resourceHardness ?? "-"}</td>
                           <td>
                             {resource.averageSystemRichness != null

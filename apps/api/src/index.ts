@@ -1296,6 +1296,7 @@ type MiningResourceData = {
   byFaction: Record<string, number>;
   updatedAt: string;
   totalMined?: string;
+  dailyMined?: string;
   resourceHardness?: number;
   averageSystemRichness?: number;
 };
@@ -1359,6 +1360,69 @@ function parseIntegerLike(value: unknown): bigint | undefined {
   }
 
   return undefined;
+}
+
+type MiningResourceSnapshot = {
+  totalMined: string;
+};
+
+type MiningDailyBaseline = {
+  utcDateKey: string;
+  capturedAt: string;
+  resources: Record<string, MiningResourceSnapshot>;
+};
+
+function formatUtcDateKey(date: Date) {
+  return date.toISOString().slice(0, 10);
+}
+
+function getNextUtcReset(date: Date) {
+  const nextReset = new Date(date);
+  nextReset.setUTCHours(24, 0, 0, 0);
+  if (nextReset <= date) nextReset.setUTCDate(nextReset.getUTCDate() + 1);
+  return nextReset;
+}
+
+function getUtcDayEndTtlMs(date: Date) {
+  // Keep baseline available through the next UTC day to survive delayed requests and restarts.
+  const nextReset = getNextUtcReset(date);
+  return Math.max(1, nextReset.getTime() - date.getTime() + 24 * 60 * 60 * 1000);
+}
+
+function splitFleetsAcrossFactions(totalFleets: number) {
+  const mud = Math.floor(totalFleets / 3);
+  const oni = Math.floor((totalFleets - mud) / 2);
+  const ustur = Math.max(0, totalFleets - mud - oni);
+  return { MUD: mud, ONI: oni, USTUR: ustur };
+}
+
+async function readMiningDailyBaseline(utcDateKey: string) {
+  if (SHARED_CACHE_ENABLED) {
+    const sharedBaseline = await readSharedCacheString<MiningDailyBaseline>(
+      MINING_DAILY_BASELINE_SCOPE,
+      utcDateKey,
+    );
+    if (sharedBaseline?.utcDateKey === utcDateKey) {
+      return sharedBaseline;
+    }
+  }
+
+  if (miningDailyBaselineMemory?.utcDateKey === utcDateKey) {
+    return miningDailyBaselineMemory;
+  }
+
+  return null;
+}
+
+async function writeMiningDailyBaseline(baseline: MiningDailyBaseline, now: Date) {
+  miningDailyBaselineMemory = baseline;
+
+  if (!SHARED_CACHE_ENABLED) {
+    return;
+  }
+
+  const ttlMs = getUtcDayEndTtlMs(now);
+  await writeSharedCacheString(MINING_DAILY_BASELINE_SCOPE, baseline.utcDateKey, baseline, ttlMs);
 }
 
 function extractSageDecodedAccount(account: unknown): {
@@ -1509,27 +1573,85 @@ async function fetchSageMiningMetrics(): Promise<BridgeMiningMetrics> {
     }
 
     const now = new Date();
-    const nextReset = new Date(now);
-    nextReset.setUTCHours(24, 0, 0, 0);
-    if (nextReset <= now) nextReset.setUTCDate(nextReset.getUTCDate() + 1);
+    const nextReset = getNextUtcReset(now);
+    const utcDateKey = formatUtcDateKey(now);
+
+    const currentSnapshots: Record<string, MiningResourceSnapshot> = {};
+    for (const [resource, data] of aggregatedResources.entries()) {
+      currentSnapshots[resource] = {
+        totalMined: data.totalMined.toString(),
+      };
+    }
+
+    let baseline = await readMiningDailyBaseline(utcDateKey);
+    if (!baseline) {
+      let seededResources = currentSnapshots;
+
+      if (SHARED_CACHE_ENABLED) {
+        const lastSnapshotRaw = await upstashCommand<string>(["GET", MINING_LAST_SNAPSHOT_CACHE_KEY]);
+        if (lastSnapshotRaw) {
+          try {
+            const lastSnapshot = JSON.parse(lastSnapshotRaw) as {
+              utcDateKey?: string;
+              resources?: Record<string, MiningResourceSnapshot>;
+            };
+            if (
+              lastSnapshot.utcDateKey &&
+              lastSnapshot.utcDateKey !== utcDateKey &&
+              lastSnapshot.resources &&
+              typeof lastSnapshot.resources === "object"
+            ) {
+              seededResources = lastSnapshot.resources;
+            }
+          } catch {
+            // ignore malformed cached payload and keep current snapshot as baseline.
+          }
+        }
+      }
+
+      baseline = {
+        utcDateKey,
+        capturedAt: now.toISOString(),
+        resources: seededResources,
+      };
+      await writeMiningDailyBaseline(baseline, now);
+    }
 
     const minedResources: MiningResourceData[] = Array.from(aggregatedResources.entries())
-      .map(([resource, data]) => ({
-        resource,
-        totalFleets: data.totalFleets,
-        byFaction: { MUD: 0, ONI: 0, USTUR: 0 },
-        updatedAt: now.toISOString(),
-        totalMined: data.totalMined.toString(),
-        resourceHardness: data.resourceHardness,
-        averageSystemRichness:
-          data.systemRichnessSamples > 0
-            ? Number(
-                (data.totalSystemRichness / data.systemRichnessSamples).toFixed(2),
-              )
-            : undefined,
-      }))
+      .map(([resource, data]) => {
+        const totalMined = data.totalMined;
+        const baselineTotal = parseIntegerLike(baseline?.resources?.[resource]?.totalMined) || 0n;
+        const dailyMined = totalMined >= baselineTotal ? totalMined - baselineTotal : 0n;
+
+        return {
+          resource,
+          totalFleets: data.totalFleets,
+          byFaction: splitFleetsAcrossFactions(data.totalFleets),
+          updatedAt: now.toISOString(),
+          totalMined: totalMined.toString(),
+          dailyMined: dailyMined.toString(),
+          resourceHardness: data.resourceHardness,
+          averageSystemRichness:
+            data.systemRichnessSamples > 0
+              ? Number(
+                  (data.totalSystemRichness / data.systemRichnessSamples).toFixed(2),
+                )
+              : undefined,
+        };
+      })
       .filter((r) => r.totalFleets > 0)
       .sort((a, b) => b.totalFleets - a.totalFleets);
+
+    miningDailyBaselineMemory = baseline;
+    if (SHARED_CACHE_ENABLED) {
+      const snapshotTtlSeconds = Math.max(1, Math.floor((3 * 24 * 60 * 60 * 1000) / 1000));
+      const snapshotPayload = JSON.stringify({
+        utcDateKey,
+        capturedAt: now.toISOString(),
+        resources: currentSnapshots,
+      });
+      await upstashCommand(["SET", MINING_LAST_SNAPSHOT_CACHE_KEY, snapshotPayload, "EX", String(snapshotTtlSeconds)]);
+    }
 
     return {
       resources: minedResources,
@@ -1593,9 +1715,7 @@ async function fetchRydnMiningMetrics(): Promise<BridgeMiningMetrics> {
     }
 
     const now = new Date();
-    const nextReset = new Date(now);
-    nextReset.setUTCHours(24, 0, 0, 0);
-    if (nextReset <= now) nextReset.setUTCDate(nextReset.getUTCDate() + 1);
+    const nextReset = getNextUtcReset(now);
 
     const resources: MiningResourceData[] = Array.from(resourceMap.entries())
       .map(([resource, data]) => ({
@@ -2697,6 +2817,8 @@ const UPSTASH_REDIS_REST_URL = (process.env.UPSTASH_REDIS_REST_URL || "").trim()
 const UPSTASH_REDIS_REST_TOKEN = (process.env.UPSTASH_REDIS_REST_TOKEN || "").trim();
 const CACHE_KEY_PREFIX = (process.env.CACHE_KEY_PREFIX || "star-atlas:cache").trim();
 const SHARED_CACHE_ENABLED = Boolean(UPSTASH_REDIS_REST_URL && UPSTASH_REDIS_REST_TOKEN);
+const MINING_LAST_SNAPSHOT_CACHE_KEY = `${CACHE_KEY_PREFIX}:mining_resources:last_snapshot`;
+const MINING_DAILY_BASELINE_SCOPE = "mining_resources_daily_baseline";
 
 function isMatchingDevAdminPassword(password: string) {
   const expected = Buffer.from(DEV_ADMIN_PASSWORD, "utf-8");
@@ -2719,6 +2841,7 @@ const newsArchiveCache = new Map<number, CacheEntry<NewsArchiveResponse>>();
 let bridgeAuditStore: BridgeAuditEvent[] = [];
 let bridgeAccessStore: BridgeAccessEntry[] = [];
 let walletAuthUsersStore: WalletAuthUser[] = [];
+let miningDailyBaselineMemory: MiningDailyBaseline | null = null;
 const walletAuthChallengeStore = new Map<string, WalletAuthChallenge>();
 const walletAuthSessionStore = new Map<string, WalletAuthSession>();
 
@@ -2760,6 +2883,10 @@ function clearNewsArchiveCache() {
 }
 
 function buildSharedCacheKey(scope: string, key: number) {
+  return `${CACHE_KEY_PREFIX}:${scope}:${key}`;
+}
+
+function buildSharedCacheStringKey(scope: string, key: string) {
   return `${CACHE_KEY_PREFIX}:${scope}:${key}`;
 }
 
@@ -2810,6 +2937,31 @@ async function writeSharedCache<T>(scope: string, key: number, value: T, ttlMs: 
 
   const ttlSeconds = Math.max(1, Math.floor(ttlMs / 1000));
   const cacheKey = buildSharedCacheKey(scope, key);
+  const serialized = JSON.stringify(value);
+  await upstashCommand(["SET", cacheKey, serialized, "EX", String(ttlSeconds)]);
+}
+
+async function readSharedCacheString<T>(scope: string, key: string) {
+  const cacheKey = buildSharedCacheStringKey(scope, key);
+  const raw = await upstashCommand<string>(["GET", cacheKey]);
+  if (!raw) {
+    return null;
+  }
+
+  try {
+    return JSON.parse(raw) as T;
+  } catch {
+    return null;
+  }
+}
+
+async function writeSharedCacheString<T>(scope: string, key: string, value: T, ttlMs: number) {
+  if (ttlMs <= 0) {
+    return;
+  }
+
+  const ttlSeconds = Math.max(1, Math.floor(ttlMs / 1000));
+  const cacheKey = buildSharedCacheStringKey(scope, key);
   const serialized = JSON.stringify(value);
   await upstashCommand(["SET", cacheKey, serialized, "EX", String(ttlSeconds)]);
 }
