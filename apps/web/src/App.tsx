@@ -2121,52 +2121,7 @@ function App() {
     }
   }, [activeTab, craftCatalog, craftCatalogLoading, loadCraftCatalog]);
 
-  useEffect(() => {
-    if (activeTab !== "resources" || !miningError || miningLoading) {
-      return;
-    }
 
-    const retryId = window.setTimeout(() => {
-      void loadMiningMetrics();
-    }, 5_000);
-
-    return () => {
-      window.clearTimeout(retryId);
-    };
-  }, [activeTab, loadMiningMetrics, miningError, miningLoading]);
-
-  useEffect(() => {
-    if (activeTab !== "resources" || !craftCatalogError || craftCatalogLoading) {
-      return;
-    }
-
-    const retryId = window.setTimeout(() => {
-      void loadCraftCatalog();
-    }, 10_000);
-
-    return () => {
-      window.clearTimeout(retryId);
-    };
-  }, [activeTab, craftCatalogError, craftCatalogLoading, loadCraftCatalog]);
-
-  useEffect(() => {
-    if (activeTab !== "resources") {
-      return;
-    }
-
-    const miningIntervalId = window.setInterval(() => {
-      void loadMiningMetrics(true);
-    }, 30_000);
-
-    const craftIntervalId = window.setInterval(() => {
-      void loadCraftCatalog(true);
-    }, 120_000);
-
-    return () => {
-      window.clearInterval(miningIntervalId);
-      window.clearInterval(craftIntervalId);
-    };
-  }, [activeTab, loadCraftCatalog, loadMiningMetrics]);
 
   useEffect(() => {
     if (activeTab === "archive" && !archiveData && !archiveLoading) {
@@ -4218,6 +4173,7 @@ function App() {
               disabled={miningLoading}
               onClick={() => {
                 void loadMiningMetrics();
+                void loadCraftCatalog();
               }}
             >
               {miningLoading ? "Обновление..." : "Обновить Данные"}
@@ -4303,7 +4259,7 @@ function App() {
             </>
           ) : (
             <p className="placeholder">
-              Автоподключение к метрикам добычи. При временном сбое повторим запрос автоматически.
+              Нажмите «Обновить Данные» для загрузки on-chain метрик добычи.
             </p>
           )}
 
