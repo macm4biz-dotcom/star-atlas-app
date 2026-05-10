@@ -16,6 +16,8 @@
     "@fastify/cors": "^11.1.0",
     "@solana/web3.js": "^1.98.4",
     "@star-atlas/shared": "1.0.0",
+    "@staratlas/data-source": "^0.9.0",
+    "@staratlas/sage": "^1.8.10",
     "dotenv": "^17.4.2",
     "fastify": "^5.6.1",
     "tweetnacl": "^1.0.3"

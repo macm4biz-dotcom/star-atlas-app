@@ -14,6 +14,9 @@ import {
   Transaction,
   TransactionInstruction,
 } from "@solana/web3.js";
+import { AnchorProvider, Program, Wallet } from "@staratlas/anchor";
+import { readAllFromRPC } from "@staratlas/data-source";
+import { MineItem, Resource, SAGE_IDL } from "@staratlas/sage";
 import nacl from "tweetnacl";
 import type {
   DashboardSnapshot,
@@ -40,6 +43,25 @@ const PORT = Number(process.env.PORT || process.env.API_PORT || 4100);
 const HOST = process.env.HOST || process.env.API_HOST || "0.0.0.0";
 const SOLANA_RPC_URL =
   process.env.SOLANA_RPC_URL || "https://api.mainnet-beta.solana.com";
+const SAGE_PROGRAM_ID = new PublicKey(
+  process.env.SAGE_PROGRAM_ID || "SAGE2HAwep459SNq61LHvjxPk4pLPEJLoMETef7f7EE",
+);
+
+const READ_ONLY_WALLET: Wallet = {
+  payer: Keypair.generate(),
+  publicKey: new PublicKey("11111111111111111111111111111111"),
+  signTransaction: async (tx) => tx,
+  signAllTransactions: async (txs) => txs,
+};
+
+function buildSageReadOnlyProgram(connection: Connection) {
+  const provider = new AnchorProvider(
+    connection,
+    READ_ONLY_WALLET,
+    AnchorProvider.defaultOptions(),
+  );
+  return new Program(SAGE_IDL, SAGE_PROGRAM_ID, provider);
+}
 
 const PLATFORM_FEE_WALLET =
   process.env.PLATFORM_FEE_WALLET || "7BNFxaeXA2DPLRnYeRLEMqA5gAWgMGdG3tcJBFrbzH5v";
@@ -1273,84 +1295,308 @@ type MiningResourceData = {
   totalFleets: number;
   byFaction: Record<string, number>;
   updatedAt: string;
+  totalMined?: string;
+  resourceHardness?: number;
+  averageSystemRichness?: number;
 };
 
 type BridgeMiningMetrics = {
   resources: MiningResourceData[];
   resetAt: string; // UTC midnight when counters reset
   updatedAt: string;
+  source?: "sage-onchain" | "rydn-fallback" | "empty";
 };
 
+function isDecodedOkAccount(account: unknown): account is {
+  type: "ok";
+  key?: unknown;
+  data?: unknown;
+} {
+  const record = asRecord(account);
+  return !!record && record.type === "ok";
+}
+
+function toBase58Like(value: unknown): string | undefined {
+  if (typeof value === "string" && value.length > 0) {
+    return value;
+  }
+
+  const record = asRecord(value);
+  if (record && typeof record.toBase58 === "function") {
+    return String(record.toBase58());
+  }
+
+  return undefined;
+}
+
+function parseIntegerLike(value: unknown): bigint | undefined {
+  if (typeof value === "bigint") {
+    return value;
+  }
+
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return BigInt(Math.trunc(value));
+  }
+
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (!trimmed) return undefined;
+
+    if (/^[0-9]+$/.test(trimmed)) {
+      return BigInt(trimmed);
+    }
+
+    if (/^[0-9a-fA-F]+$/.test(trimmed)) {
+      return BigInt(`0x${trimmed}`);
+    }
+
+    return undefined;
+  }
+
+  const record = asRecord(value);
+  if (record && typeof record.toString === "function") {
+    return parseIntegerLike(record.toString());
+  }
+
+  return undefined;
+}
+
+function extractSageDecodedAccount(account: unknown): {
+  key: string;
+  data: {
+    gameId?: unknown;
+    mineItem?: unknown;
+    name?: number[];
+    resourceHardness?: number;
+    numMiners?: unknown;
+    amountMined?: unknown;
+    systemRichness?: number;
+  };
+} | null {
+  if (!isDecodedOkAccount(account)) {
+    return null;
+  }
+
+  const rawData = asRecord(account.data);
+  const data = asRecord(rawData?._data) || rawData;
+  const key = toBase58Like(rawData?._key) || toBase58Like(account.key);
+
+  if (!data || !key) {
+    return null;
+  }
+
+  return {
+    key,
+    data: {
+      gameId: data.gameId,
+      mineItem: data.mineItem,
+      name: Array.isArray(data.name) ? data.name as number[] : undefined,
+      resourceHardness:
+        typeof data.resourceHardness === "number" ? data.resourceHardness : undefined,
+      numMiners: data.numMiners,
+      amountMined: data.amountMined,
+      systemRichness: typeof data.systemRichness === "number" ? data.systemRichness : undefined,
+    },
+  };
+}
+
 /**
- * Fetch mining data from RYDN API and join with sector-resource mapping
+ * Fetch mining data directly from SAGE on-chain accounts.
+ * Falls back to RYDN-based aggregation if the Solana RPC path is unavailable.
  */
 async function fetchSageMiningMetrics(): Promise<BridgeMiningMetrics> {
   try {
-    const miningUrl = process.env.BRIDGE_SAGE_MINING_UPSTREAM_URL || 
-                      "https://api.ryden.systems/api_fleets_all.php";
-    
-    const response = await fetchJsonWithTimeout(miningUrl, 8000);
-    const data = asRecord(response);
-    
-    if (!data) {
-      return buildEmptyMiningMetrics();
+    const connection = new Connection(SOLANA_RPC_URL, "confirmed");
+    const program = buildSageReadOnlyProgram(connection);
+    const [mineItems, resources] = await Promise.all([
+      readAllFromRPC(connection, program, MineItem, "confirmed"),
+      readAllFromRPC(connection, program, Resource, "confirmed"),
+    ]);
+
+    const mineItemAccounts = mineItems
+      .map((account) => extractSageDecodedAccount(account))
+      .filter((account): account is NonNullable<typeof account> => !!account);
+    const resourceAccounts = resources
+      .map((account) => extractSageDecodedAccount(account))
+      .filter((account): account is NonNullable<typeof account> => !!account);
+
+    if (!resourceAccounts.length || !mineItemAccounts.length) {
+      throw new Error("No SAGE resource accounts returned by RPC");
     }
-    
-    // Extract mining array: [{s: [x,y], c: fleetCount}, ...]
-    const miningArray = Array.isArray(data.mining) ? data.mining : [];
-    
-    // Extract faction stats if available
-    const statsRecord = asRecord(data.stats || {});
-    const factionStats = {
-      MUD: Number(statsRecord?.mud || statsRecord?.faction1 || 0),
-      ONI: Number(statsRecord?.oni || statsRecord?.faction2 || 0),
-      USTUR: Number(statsRecord?.ustur || statsRecord?.faction3 || 0),
-    };
-    
-    // Aggregate mining data by resource
-    const resourceMap = new Map<string, { total: number; byFaction: Record<string, number> }>();
-    
-    // Initialize all resources
-    for (const resource of ALL_RESOURCES) {
-      resourceMap.set(resource, { total: 0, byFaction: { MUD: 0, ONI: 0, USTUR: 0 } });
+
+    const resourceCountByGame = new Map<string, number>();
+    for (const resourceAccount of resourceAccounts) {
+      const gameId = toBase58Like(resourceAccount.data.gameId);
+      if (!gameId) continue;
+      resourceCountByGame.set(gameId, (resourceCountByGame.get(gameId) || 0) + 1);
     }
-    
-    // Process mining sectors
-    for (const entry of miningArray) {
-      const sectorEntry = asRecord(entry);
-      if (!sectorEntry) continue;
-      
-      const sectorCoords = Array.isArray(sectorEntry.s) && sectorEntry.s.length === 2
-        ? sectorEntry.s
-        : null;
-      const fleetCount = Number(sectorEntry.c || 0);
-      
-      if (!sectorCoords || fleetCount <= 0) continue;
-      
-      const [x, y] = sectorCoords;
-      const resource = getResourceForSector(x, y);
-      
-      if (!resource) continue;
-      
-      const entry_data = resourceMap.get(resource);
-      if (!entry_data) continue;
-      
-      entry_data.total += fleetCount;
-      
-      // Distribute fleets proportionally across factions (simplified heuristic)
-      // In reality, we'd need per-faction mining data from RYDN, but it's not available
-      const perFaction = Math.ceil(fleetCount / 3);
-      entry_data.byFaction.MUD += perFaction;
-      entry_data.byFaction.ONI += perFaction;
-      entry_data.byFaction.USTUR += fleetCount - perFaction * 2;
+
+    const activeGameId = Array.from(resourceCountByGame.entries())
+      .sort((left, right) => right[1] - left[1])[0]?.[0];
+
+    if (!activeGameId) {
+      throw new Error("Unable to determine active SAGE game id from resource accounts");
     }
-    
-    // Build response
+
+    const mineItemByKey = new Map(
+      mineItemAccounts
+        .filter((mineItemAccount) => toBase58Like(mineItemAccount.data.gameId) === activeGameId)
+        .filter((mineItemAccount) => Array.isArray(mineItemAccount.data.name))
+        .map((mineItemAccount) => [
+          mineItemAccount.key,
+          {
+            name: decodeSageNameBytes(mineItemAccount.data.name || []),
+            resourceHardness: mineItemAccount.data.resourceHardness,
+          },
+        ]),
+    );
+
+    const aggregatedResources = new Map<
+      string,
+      {
+        totalFleets: number;
+        totalMined: bigint;
+        resourceHardness?: number;
+        totalSystemRichness: number;
+        systemRichnessSamples: number;
+      }
+    >();
+
+    for (const resourceAccount of resourceAccounts) {
+      if (toBase58Like(resourceAccount.data.gameId) !== activeGameId) {
+        continue;
+      }
+
+      const mineItemKey = toBase58Like(resourceAccount.data.mineItem);
+      const numMiners = parseIntegerLike(resourceAccount.data.numMiners);
+      const amountMined = parseIntegerLike(resourceAccount.data.amountMined);
+
+      if (
+        !mineItemKey ||
+        numMiners == null ||
+        amountMined == null ||
+        typeof resourceAccount.data.systemRichness !== "number"
+      ) {
+        continue;
+      }
+
+      const mineItem = mineItemByKey.get(mineItemKey);
+      const resourceName = mineItem?.name || mineItemKey;
+      const numMinersCount = Number(numMiners);
+
+      if (!Number.isFinite(numMinersCount) || numMinersCount <= 0) {
+        continue;
+      }
+
+      const current = aggregatedResources.get(resourceName) || {
+        totalFleets: 0,
+        totalMined: 0n,
+        resourceHardness: mineItem?.resourceHardness,
+        totalSystemRichness: 0,
+        systemRichnessSamples: 0,
+      };
+
+      current.totalFleets += numMinersCount;
+      current.totalMined += amountMined;
+      current.totalSystemRichness += resourceAccount.data.systemRichness;
+      current.systemRichnessSamples += 1;
+
+      if (current.resourceHardness == null && mineItem?.resourceHardness != null) {
+        current.resourceHardness = mineItem.resourceHardness;
+      }
+
+      aggregatedResources.set(resourceName, current);
+    }
+
     const now = new Date();
     const nextReset = new Date(now);
     nextReset.setUTCHours(24, 0, 0, 0);
     if (nextReset <= now) nextReset.setUTCDate(nextReset.getUTCDate() + 1);
-    
+
+    const minedResources: MiningResourceData[] = Array.from(aggregatedResources.entries())
+      .map(([resource, data]) => ({
+        resource,
+        totalFleets: data.totalFleets,
+        byFaction: { MUD: 0, ONI: 0, USTUR: 0 },
+        updatedAt: now.toISOString(),
+        totalMined: data.totalMined.toString(),
+        resourceHardness: data.resourceHardness,
+        averageSystemRichness:
+          data.systemRichnessSamples > 0
+            ? Number(
+                (data.totalSystemRichness / data.systemRichnessSamples).toFixed(2),
+              )
+            : undefined,
+      }))
+      .filter((r) => r.totalFleets > 0)
+      .sort((a, b) => b.totalFleets - a.totalFleets);
+
+    return {
+      resources: minedResources,
+      resetAt: nextReset.toISOString(),
+      updatedAt: now.toISOString(),
+      source: "sage-onchain",
+    };
+  } catch (error) {
+    app.log.warn(
+      { error: String(error) },
+      "Failed to fetch direct SAGE mining metrics, falling back to RYDN mapping",
+    );
+    return fetchRydnMiningMetrics();
+  }
+}
+
+async function fetchRydnMiningMetrics(): Promise<BridgeMiningMetrics> {
+  try {
+    const miningUrl = process.env.BRIDGE_SAGE_MINING_UPSTREAM_URL ||
+      "https://api.ryden.systems/api_fleets_all.php";
+
+    const response = await fetchJsonWithTimeout(miningUrl, 8000);
+    const data = asRecord(response);
+
+    if (!data) {
+      return buildEmptyMiningMetrics();
+    }
+
+    const miningArray = Array.isArray(data.mining) ? data.mining : [];
+    const resourceMap = new Map<string, { total: number; byFaction: Record<string, number> }>();
+
+    for (const resource of ALL_RESOURCES) {
+      resourceMap.set(resource, { total: 0, byFaction: { MUD: 0, ONI: 0, USTUR: 0 } });
+    }
+
+    for (const entry of miningArray) {
+      const sectorEntry = asRecord(entry);
+      if (!sectorEntry) continue;
+
+      const sectorCoords = Array.isArray(sectorEntry.s) && sectorEntry.s.length === 2
+        ? sectorEntry.s
+        : null;
+      const fleetCount = Number(sectorEntry.c || 0);
+
+      if (!sectorCoords || fleetCount <= 0) continue;
+
+      const [x, y] = sectorCoords;
+      const resource = getResourceForSector(x, y);
+
+      if (!resource) continue;
+
+      const entryData = resourceMap.get(resource);
+      if (!entryData) continue;
+
+      entryData.total += fleetCount;
+
+      const perFaction = Math.ceil(fleetCount / 3);
+      entryData.byFaction.MUD += perFaction;
+      entryData.byFaction.ONI += perFaction;
+      entryData.byFaction.USTUR += fleetCount - perFaction * 2;
+    }
+
+    const now = new Date();
+    const nextReset = new Date(now);
+    nextReset.setUTCHours(24, 0, 0, 0);
+    if (nextReset <= now) nextReset.setUTCDate(nextReset.getUTCDate() + 1);
+
     const resources: MiningResourceData[] = Array.from(resourceMap.entries())
       .map(([resource, data]) => ({
         resource,
@@ -1358,21 +1604,28 @@ async function fetchSageMiningMetrics(): Promise<BridgeMiningMetrics> {
         byFaction: data.byFaction,
         updatedAt: now.toISOString(),
       }))
-      .filter((r) => r.totalFleets > 0)
-      .sort((a, b) => b.totalFleets - a.totalFleets);
-    
+      .filter((resource) => resource.totalFleets > 0)
+      .sort((left, right) => right.totalFleets - left.totalFleets);
+
     return {
       resources,
       resetAt: nextReset.toISOString(),
       updatedAt: now.toISOString(),
+      source: "rydn-fallback",
     };
   } catch (error) {
     app.log.warn(
       { error: String(error) },
-      "Failed to fetch mining metrics from RYDN, returning empty",
+      "Failed to fetch fallback mining metrics, returning empty",
     );
     return buildEmptyMiningMetrics();
   }
+}
+
+function decodeSageNameBytes(nameBytes: number[]) {
+  return String.fromCharCode(...nameBytes)
+    .replace(/\0+/g, "")
+    .trim();
 }
 
 function buildEmptyMiningMetrics(): BridgeMiningMetrics {
@@ -1385,6 +1638,7 @@ function buildEmptyMiningMetrics(): BridgeMiningMetrics {
     resources: [],
     resetAt: nextReset.toISOString(),
     updatedAt: now.toISOString(),
+    source: "empty",
   };
 }
 

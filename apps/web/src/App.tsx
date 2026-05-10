@@ -252,6 +252,9 @@ type BridgeLiveMapResponse = {
 type MiningResourceData = {
   resource: string;
   totalFleets: number;
+  totalMined?: string;
+  resourceHardness?: number;
+  averageSystemRichness?: number;
   byFaction: {
     MUD: number;
     ONI: number;
@@ -264,6 +267,7 @@ type BridgeMiningMetrics = {
   resources: MiningResourceData[];
   resetAt: string;
   updatedAt: string;
+  source?: "sage-onchain" | "rydn-fallback" | "empty";
 };
 
 type BridgeCapabilities = {
@@ -435,6 +439,13 @@ function parseNonNegativeNumber(input: string) {
     return null;
   }
   return value;
+}
+
+function formatIntegerString(value?: string) {
+  if (!value) return "-";
+  const digitsOnly = value.replace(/\D/g, "");
+  if (!digitsOnly) return "-";
+  return digitsOnly.replace(/\B(?=(\d{3})+(?!\d))/g, " ");
 }
 
 function getErrorMessage(error: unknown) {
@@ -4038,6 +4049,10 @@ function App() {
 
           {miningMetrics ? (
             <>
+              <p className="timestamp">
+                Источник: <strong>{miningMetrics.source || "unknown"}</strong>
+              </p>
+
               {miningMetrics.resources && miningMetrics.resources.length > 0 ? (
                 <div className="resources-table">
                   <table>
@@ -4045,6 +4060,9 @@ function App() {
                       <tr>
                         <th>Ресурс</th>
                         <th>Всего Флотов</th>
+                        <th>Total Mined</th>
+                        <th>Hardness</th>
+                        <th>Avg Richness</th>
                         <th>MUD</th>
                         <th>ONI</th>
                         <th>USTUR</th>
@@ -4056,6 +4074,15 @@ function App() {
                           <td className="resource-name">{resource.resource}</td>
                           <td className="resource-total">
                             <strong>{resource.totalFleets}</strong>
+                          </td>
+                          <td>
+                            {formatIntegerString(resource.totalMined)}
+                          </td>
+                          <td>{resource.resourceHardness ?? "-"}</td>
+                          <td>
+                            {resource.averageSystemRichness != null
+                              ? resource.averageSystemRichness.toLocaleString("ru-RU")
+                              : "-"}
                           </td>
                           <td className="faction mud">{resource.byFaction.MUD || 0}</td>
                           <td className="faction oni">{resource.byFaction.ONI || 0}</td>
