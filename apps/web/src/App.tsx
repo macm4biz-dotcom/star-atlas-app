@@ -2122,6 +2122,34 @@ function App() {
   }, [activeTab, craftCatalog, craftCatalogLoading, loadCraftCatalog]);
 
   useEffect(() => {
+    if (activeTab !== "resources" || !miningError || miningLoading) {
+      return;
+    }
+
+    const retryId = window.setTimeout(() => {
+      void loadMiningMetrics();
+    }, 5_000);
+
+    return () => {
+      window.clearTimeout(retryId);
+    };
+  }, [activeTab, loadMiningMetrics, miningError, miningLoading]);
+
+  useEffect(() => {
+    if (activeTab !== "resources" || !craftCatalogError || craftCatalogLoading) {
+      return;
+    }
+
+    const retryId = window.setTimeout(() => {
+      void loadCraftCatalog();
+    }, 10_000);
+
+    return () => {
+      window.clearTimeout(retryId);
+    };
+  }, [activeTab, craftCatalogError, craftCatalogLoading, loadCraftCatalog]);
+
+  useEffect(() => {
     if (activeTab !== "resources") {
       return;
     }
@@ -4275,7 +4303,7 @@ function App() {
             </>
           ) : (
             <p className="placeholder">
-              Нажмите «Обновить Данные», чтобы загрузить метрики добычи SAGE.
+              Автоподключение к метрикам добычи. При временном сбое повторим запрос автоматически.
             </p>
           )}
 
