@@ -1527,11 +1527,33 @@ function extractSageFleetAccount(account: unknown): {
   };
 }
 
+const SAGE_ONCHAIN_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+let sageOnchainCache: { data: BridgeMiningMetrics; fetchedAt: number } | null = null;
+let sageOnchainFetchPromise: Promise<BridgeMiningMetrics> | null = null;
+
 /**
  * Fetch mining data directly from SAGE on-chain accounts.
+ * Results are cached in-memory for 5 minutes to avoid RPC rate limits.
  * Falls back to RYDN-based aggregation if the Solana RPC path is unavailable.
  */
 async function fetchSageMiningMetrics(): Promise<BridgeMiningMetrics> {
+  const now = Date.now();
+  if (sageOnchainCache && now - sageOnchainCache.fetchedAt < SAGE_ONCHAIN_CACHE_TTL_MS) {
+    return sageOnchainCache.data;
+  }
+
+  // Deduplicate concurrent requests — return the in-flight promise if one exists
+  if (sageOnchainFetchPromise) {
+    return sageOnchainFetchPromise;
+  }
+
+  sageOnchainFetchPromise = fetchSageMiningMetricsFromRPC().finally(() => {
+    sageOnchainFetchPromise = null;
+  });
+  return sageOnchainFetchPromise;
+}
+
+async function fetchSageMiningMetricsFromRPC(): Promise<BridgeMiningMetrics> {
   try {
     const connection = new Connection(SOLANA_RPC_URL, "confirmed");
     const program = buildSageReadOnlyProgram(connection);
@@ -1753,12 +1775,15 @@ async function fetchSageMiningMetrics(): Promise<BridgeMiningMetrics> {
       await upstashCommand(["SET", MINING_LAST_SNAPSHOT_CACHE_KEY, snapshotPayload, "EX", String(snapshotTtlSeconds)]);
     }
 
-    return {
+    const result: BridgeMiningMetrics = {
       resources: minedResources,
       resetAt: nextReset.toISOString(),
       updatedAt: now.toISOString(),
       source: "sage-onchain",
     };
+
+    sageOnchainCache = { data: result, fetchedAt: Date.now() };
+    return result;
   } catch (error) {
     app.log.warn(
       { error: String(error) },
