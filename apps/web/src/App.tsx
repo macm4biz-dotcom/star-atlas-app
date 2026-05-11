@@ -581,8 +581,11 @@ function formatTokenAmount(value?: number) {
 }
 
 function formatTokenAmountWithCoverage(value: number | undefined, scannedWallets: number) {
+  if (value != null && Number.isFinite(value)) {
+    return formatTokenAmount(value);
+  }
   if (scannedWallets <= 0) {
-    return "н/д";
+    return "-";
   }
   return formatTokenAmount(value);
 }
@@ -4397,7 +4400,6 @@ function App() {
                     Покрытие mint-картой: <strong>{miningMetrics.reserveSummary.walletCoverageResources}</strong> из <strong>{miningMetrics.resources.length}</strong>
                     {" | "}
                     Игроков в скане: <strong>{miningMetrics.reserveSummary.playerWalletsScanned}</strong>
-                    {miningMetrics.reserveSummary.playerWalletsScanned === 0 ? " (добавь BRIDGE_RESOURCE_PLAYER_WALLETS)" : ""}
                     {" | "}
                     Dev-кошельков: <strong>{miningMetrics.reserveSummary.developerWalletsScanned}</strong>
                   </p>

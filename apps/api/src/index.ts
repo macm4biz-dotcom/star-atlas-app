@@ -1564,6 +1564,28 @@ async function readTokenBalancesByWalletsAndMints(
   return balancesByMint;
 }
 
+async function readTokenSupplyByMints(
+  connection: Connection,
+  mints: Set<string>,
+) {
+  const supplyByMint = new Map<string, number>();
+
+  for (const mint of mints) {
+    try {
+      const response = await connection.getTokenSupply(new PublicKey(mint));
+      const amount = Number(response.value.uiAmount ?? 0);
+      if (!Number.isFinite(amount) || amount < 0) {
+        continue;
+      }
+      supplyByMint.set(mint, Number(amount.toFixed(9)));
+    } catch (error) {
+      app.log.warn({ mint, error: String(error) }, "Failed to read token supply");
+    }
+  }
+
+  return supplyByMint;
+}
+
 function resolveSageFleetFaction(value: unknown): BridgeFaction | null {
   if (value === 1 || value === "1") return "MUD";
   if (value === 2 || value === "2") return "ONI";
@@ -1991,12 +2013,20 @@ async function fetchSageMiningMetricsFromRPC(): Promise<BridgeMiningMetrics> {
     const { playerWallets, developerWallets } = resolveBridgeResourceWalletGroups();
     let playerBalancesByMint = new Map<string, number>();
     let developerBalancesByMint = new Map<string, number>();
+    let supplyByMint = new Map<string, number>();
 
     if (trackedMints.size > 0) {
-      [playerBalancesByMint, developerBalancesByMint] = await Promise.all([
-        readTokenBalancesByWalletsAndMints(connection, playerWallets, trackedMints),
-        readTokenBalancesByWalletsAndMints(connection, developerWallets, trackedMints),
-      ]);
+      if (playerWallets.length > 0) {
+        [playerBalancesByMint, developerBalancesByMint] = await Promise.all([
+          readTokenBalancesByWalletsAndMints(connection, playerWallets, trackedMints),
+          readTokenBalancesByWalletsAndMints(connection, developerWallets, trackedMints),
+        ]);
+      } else {
+        [developerBalancesByMint, supplyByMint] = await Promise.all([
+          readTokenBalancesByWalletsAndMints(connection, developerWallets, trackedMints),
+          readTokenSupplyByMints(connection, trackedMints),
+        ]);
+      }
     }
 
     for (const resource of minedResources) {
@@ -2008,8 +2038,11 @@ async function fetchSageMiningMetricsFromRPC(): Promise<BridgeMiningMetrics> {
 
       const mint = mintEntry.mint;
 
-      const playerBalance = Number((playerBalancesByMint.get(mint) || 0).toFixed(6));
       const developerBalance = Number((developerBalancesByMint.get(mint) || 0).toFixed(6));
+      const playerBalanceRaw = playerWallets.length > 0
+        ? (playerBalancesByMint.get(mint) || 0)
+        : Math.max(0, (supplyByMint.get(mint) || 0) - developerBalance);
+      const playerBalance = Number(playerBalanceRaw.toFixed(6));
 
       resource.resourceMint = mint;
       resource.resourceMintSource = mintEntry.source;
