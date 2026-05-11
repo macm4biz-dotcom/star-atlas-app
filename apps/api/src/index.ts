@@ -1339,8 +1339,7 @@ type R4ResourceKey = "food" | "ammunition" | "toolkit" | "fuel";
 
 type R4DailyProductionEntry = {
   utcDateKey: string;
-  crafted: number;
-  staked: number;
+  created: number;  // total created (craft + staking + other sources)
 };
 
 type R4ProductionHistoryFile = {
@@ -1373,11 +1372,9 @@ type R4ResourceMetrics = {
   label: string;
   mint?: string;
   mintSource?: "r4-env" | "bridge-env" | "unresolved";
-  totalCreatedCraft: number;
-  totalCreatedStaking: number;
-  totalCreated: number;
-  totalCreatedUnattributed: number;
-  totalConsumed: number;
+  totalCreated: number;  // всего создано за всё время
+  createdToday: number;  // создано за сегодня
+  totalConsumed: number;  // всего потреблено
   playerBalance: number;
   developerBalance: number;
   totalSupply: number;
@@ -1554,13 +1551,11 @@ function normalizeR4ProductionEntries(entries: unknown): R4DailyProductionEntry[
         return null;
       }
 
-      const crafted = Math.max(0, Number(record?.crafted || 0));
-      const staked = Math.max(0, Number(record?.staked || 0));
+      const created = Math.max(0, Number(record?.created || 0));
 
       return {
         utcDateKey,
-        crafted: Number.isFinite(crafted) ? Number(crafted.toFixed(6)) : 0,
-        staked: Number.isFinite(staked) ? Number(staked.toFixed(6)) : 0,
+        created: Number.isFinite(created) ? Number(created.toFixed(6)) : 0,
       } satisfies R4DailyProductionEntry;
     })
     .filter((entry): entry is R4DailyProductionEntry => !!entry)
@@ -2800,24 +2795,18 @@ async function fetchBridgeR4Metrics(): Promise<BridgeR4Metrics> {
     const playerBalance = Number(playerBalanceRaw.toFixed(6));
 
     const productionEntries = productionHistory.resources[resource.key] || [];
-    const totalCreatedCraft = Number(
-      productionEntries.reduce((sum, entry) => sum + Math.max(0, Number(entry.crafted || 0)), 0).toFixed(6),
+    const totalCreatedKnown = Number(
+      productionEntries.reduce((sum, entry) => sum + Math.max(0, Number(entry.created || 0)), 0).toFixed(6),
     );
-    const totalCreatedStaking = Number(
-      productionEntries.reduce((sum, entry) => sum + Math.max(0, Number(entry.staked || 0)), 0).toFixed(6),
-    );
-    const createdKnown = totalCreatedCraft + totalCreatedStaking;
-    const createdOverall = Math.max(createdKnown, totalSupply);
-    const totalCreatedUnattributed = Number(Math.max(0, createdOverall - createdKnown).toFixed(6));
-    const consumedOverall = Number(Math.max(0, createdOverall - totalSupply).toFixed(6));
+    const totalCreatedFinal = Math.max(totalCreatedKnown, totalSupply);
+    const consumedOverall = Number(Math.max(0, totalCreatedFinal - totalSupply).toFixed(6));
 
+    // Получить создано за сегодня
     const createdByDate = new Map<string, number>();
     for (const entry of productionEntries) {
-      createdByDate.set(
-        entry.utcDateKey,
-        Number((Math.max(0, Number(entry.crafted || 0)) + Math.max(0, Number(entry.staked || 0))).toFixed(6)),
-      );
+      createdByDate.set(entry.utcDateKey, Number(Math.max(0, Number(entry.created || 0)).toFixed(6)));
     }
+    const createdToday = Number((createdByDate.get(utcDateKey) || 0).toFixed(6));
 
     const priceUsd = mint ? Number((pricesByMint[mint] || 0).toFixed(8)) : 0;
     const balanceHistory = await appendR4BalanceSnapshot(resource.key, {
@@ -2882,7 +2871,7 @@ async function fetchBridgeR4Metrics(): Promise<BridgeR4Metrics> {
     else if (signal === "consumption-spike" || signal === "consumption-drop") anomalyCount += 1;
     else balancedCount += 1;
 
-    totalCreated += createdOverall;
+    totalCreated += totalCreatedFinal;
     totalConsumed += consumedOverall;
     totalPlayerBalance += playerBalance;
 
@@ -2891,10 +2880,8 @@ async function fetchBridgeR4Metrics(): Promise<BridgeR4Metrics> {
       label: resource.label,
       mint,
       mintSource: resource.mint ? resource.mintSource : "unresolved",
-      totalCreatedCraft,
-      totalCreatedStaking,
-      totalCreated: Number(createdOverall.toFixed(6)),
-      totalCreatedUnattributed,
+      totalCreated: Number(totalCreatedFinal.toFixed(6)),
+      createdToday,
       totalConsumed: consumedOverall,
       playerBalance,
       developerBalance,

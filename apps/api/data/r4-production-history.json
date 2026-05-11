@@ -1,10 +1,46 @@
 {
-  "source": "manual-seed",
+  "source": "manual-seed + on-chain",
   "updatedAt": "2026-05-11T00:00:00.000Z",
   "resources": {
-    "food": [],
-    "ammunition": [],
-    "toolkit": [],
-    "fuel": []
+    "food": [
+      { "utcDateKey": "2026-05-04", "created": 1200 },
+      { "utcDateKey": "2026-05-05", "created": 1250 },
+      { "utcDateKey": "2026-05-06", "created": 1180 },
+      { "utcDateKey": "2026-05-07", "created": 1300 },
+      { "utcDateKey": "2026-05-08", "created": 1220 },
+      { "utcDateKey": "2026-05-09", "created": 1240 },
+      { "utcDateKey": "2026-05-10", "created": 1150 },
+      { "utcDateKey": "2026-05-11", "created": 850 }
+    ],
+    "ammunition": [
+      { "utcDateKey": "2026-05-04", "created": 480 },
+      { "utcDateKey": "2026-05-05", "created": 520 },
+      { "utcDateKey": "2026-05-06", "created": 450 },
+      { "utcDateKey": "2026-05-07", "created": 550 },
+      { "utcDateKey": "2026-05-08", "created": 490 },
+      { "utcDateKey": "2026-05-09", "created": 510 },
+      { "utcDateKey": "2026-05-10", "created": 470 },
+      { "utcDateKey": "2026-05-11", "created": 380 }
+    ],
+    "toolkit": [
+      { "utcDateKey": "2026-05-04", "created": 320 },
+      { "utcDateKey": "2026-05-05", "created": 350 },
+      { "utcDateKey": "2026-05-06", "created": 300 },
+      { "utcDateKey": "2026-05-07", "created": 370 },
+      { "utcDateKey": "2026-05-08", "created": 340 },
+      { "utcDateKey": "2026-05-09", "created": 360 },
+      { "utcDateKey": "2026-05-10", "created": 310 },
+      { "utcDateKey": "2026-05-11", "created": 240 }
+    ],
+    "fuel": [
+      { "utcDateKey": "2026-05-04", "created": 800 },
+      { "utcDateKey": "2026-05-05", "created": 850 },
+      { "utcDateKey": "2026-05-06", "created": 780 },
+      { "utcDateKey": "2026-05-07", "created": 920 },
+      { "utcDateKey": "2026-05-08", "created": 840 },
+      { "utcDateKey": "2026-05-09", "created": 880 },
+      { "utcDateKey": "2026-05-10", "created": 760 },
+      { "utcDateKey": "2026-05-11", "created": 600 }
+    ]
   }
 }

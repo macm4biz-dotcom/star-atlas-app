@@ -308,10 +308,8 @@ type R4ResourceMetrics = {
   label: string;
   mint?: string;
   mintSource?: "r4-env" | "bridge-env" | "unresolved";
-  totalCreatedCraft: number;
-  totalCreatedStaking: number;
   totalCreated: number;
-  totalCreatedUnattributed: number;
+  createdToday: number;
   totalConsumed: number;
   playerBalance: number;
   developerBalance: number;
@@ -4773,17 +4771,14 @@ function App() {
                     <thead>
                       <tr>
                         <th>Ресурс</th>
-                        <th>Создано Крафт</th>
-                        <th>Создано Стейкинг</th>
-                        <th>Создано Всего</th>
-                        <th>Израсходовано</th>
-                        <th>Остаток Игроки</th>
+                        <th>Создано всего</th>
+                        <th>Создано сегодня</th>
+                        <th>Потреблено</th>
+                        <th>Остаток</th>
                         <th>Расход 24ч</th>
-                        <th>Средний 7д</th>
                         <th>Покрытие (дни)</th>
                         <th>Цена $</th>
                         <th>24ч %</th>
-                        <th>7д %</th>
                         <th>BUY объём</th>
                         <th>SELL объём</th>
                         <th>Сигнал</th>
@@ -4812,16 +4807,12 @@ function App() {
                               <div className="mint-source">{mintInfo}</div>
                             </td>
                             <td className="metric-compact">{renderMetricWithTooltip(
-                              formatCompactTokenAmount(resource.totalCreatedCraft),
-                              formatTokenAmount(resource.totalCreatedCraft),
-                            )}</td>
-                            <td className="metric-compact">{renderMetricWithTooltip(
-                              formatCompactTokenAmount(resource.totalCreatedStaking),
-                              formatTokenAmount(resource.totalCreatedStaking),
-                            )}</td>
-                            <td className="metric-compact">{renderMetricWithTooltip(
                               formatCompactTokenAmount(resource.totalCreated),
                               formatTokenAmount(resource.totalCreated),
+                            )}</td>
+                            <td className="metric-compact">{renderMetricWithTooltip(
+                              formatCompactTokenAmount(resource.createdToday),
+                              formatTokenAmount(resource.createdToday),
                             )}</td>
                             <td className="metric-compact">{renderMetricWithTooltip(
                               formatCompactTokenAmount(resource.totalConsumed),
@@ -4842,7 +4833,7 @@ function App() {
                             <td>{resource.daysOfCover != null ? resource.daysOfCover.toLocaleString("ru-RU", { maximumFractionDigits: 1 }) : "-"}</td>
                             <td>{resource.priceUsd > 0 ? resource.priceUsd.toLocaleString("ru-RU", { minimumFractionDigits: 6, maximumFractionDigits: 6 }) : "-"}</td>
                             <td>{formatPercentDelta(resource.priceChange24hPct)}</td>
-                            <td>{formatPercentDelta(resource.priceChange7dPct)}</td>
+
                             <td>{resource.buyOrderVolume.toLocaleString("ru-RU")}</td>
                             <td>{resource.sellOrderVolume.toLocaleString("ru-RU")}</td>
                             <td>
