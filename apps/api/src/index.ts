@@ -3038,7 +3038,8 @@ async function fetchBridgeR4Metrics(): Promise<BridgeR4Metrics> {
     for (const entry of productionEntries) {
       createdByDate.set(entry.utcDateKey, Number(Math.max(0, Number(entry.created || 0)).toFixed(6)));
     }
-    const createdToday = Number((createdByDate.get(utcDateKey) || 0).toFixed(6));
+    // createdToday будет пересчитан ниже из on-chain снимков (если доступны)
+    let createdToday = Number((createdByDate.get(utcDateKey) || 0).toFixed(6)); // fallback: seed
 
     const orderbook = orderbookByResource.get(resource.key);
     const marketDerivedPriceUsd =
@@ -3058,6 +3059,15 @@ async function fetchBridgeR4Metrics(): Promise<BridgeR4Metrics> {
           resource: resource.key,
           snapshots: [],
         };
+
+    // Пересчитать createdToday из реальной разницы on-chain предложения vs вчера
+    if (hasOnchainMintData) {
+      const yesterdayDateKey = formatUtcDateKey(new Date(now.getTime() - 86_400_000));
+      const yesterdaySnap = balanceHistory.snapshots.find((s) => s.utcDateKey === yesterdayDateKey);
+      if (yesterdaySnap) {
+        createdToday = Number(Math.max(0, totalSupply - yesterdaySnap.totalSupply).toFixed(6));
+      }
+    }
 
     const dailyConsumptions: number[] = [];
     for (let index = 1; index < balanceHistory.snapshots.length; index += 1) {
