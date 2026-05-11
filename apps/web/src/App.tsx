@@ -710,7 +710,7 @@ function formatMintSourceLabel(source?: "onchain" | "env" | "unresolved") {
 function formatR4MintSourceLabel(source?: "r4-env" | "bridge-env" | "unresolved") {
   if (source === "r4-env") return "r4-env";
   if (source === "bridge-env") return "bridge-env";
-  return "missing";
+  return "on-chain PDA";
 }
 
 function getErrorMessage(error: unknown) {
@@ -4788,21 +4788,25 @@ function App() {
                       {r4Metrics.resources.map((resource) => {
                         const mintInfo = resource.mint
                           ? `${formatR4MintSourceLabel(resource.mintSource)} · ${formatMintShort(resource.mint)}`
-                          : "missing";
+                          : "on-chain PDA";
                         const solscanUrl = resource.mint
                           ? `https://solscan.io/token/${resource.mint}`
-                          : `https://solscan.io/?search=${encodeURIComponent(resource.key)}`;
+                          : undefined;
 
                         return (
                           <tr key={resource.key} className={resource.mint ? "" : "resource-row-no-mint"}>
                             <td className="resource-name">
-                              <a
-                                href={solscanUrl}
-                                target="_blank"
-                                rel="noreferrer"
-                              >
-                                {resource.label}
-                              </a>
+                              {solscanUrl ? (
+                                <a
+                                  href={solscanUrl}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                >
+                                  {resource.label}
+                                </a>
+                              ) : (
+                                <span>{resource.label}</span>
+                              )}
                               <div className="mint-source">{mintInfo}</div>
                             </td>
                             <td className="metric-compact">{renderMetricWithTooltip(
