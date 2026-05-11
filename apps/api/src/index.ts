@@ -1895,12 +1895,17 @@ async function writeR4DailyActivity(activity: R4DailyActivity): Promise<void> {
   await writeSharedCacheString(R4_HELIUS_SCOPE, `activity:${activity.dateKey}`, activity, R4_HELIUS_TTL_MS);
 }
 
-async function readR4ScanCursor(resourceKey: R4ResourceKey, dateKey: string): Promise<string | null> {
-  return readSharedCacheString<string>(R4_HELIUS_SCOPE, `cursor:${resourceKey}:${dateKey}`);
+async function readR4ScanCursor(resourceKey: R4ResourceKey, dateKey: string, eventType: "MINT" | "BURN"): Promise<string | null> {
+  return readSharedCacheString<string>(R4_HELIUS_SCOPE, `cursor:${resourceKey}:${dateKey}:${eventType}`);
 }
 
-async function writeR4ScanCursor(resourceKey: R4ResourceKey, dateKey: string, cursor: string): Promise<void> {
-  await writeSharedCacheString(R4_HELIUS_SCOPE, `cursor:${resourceKey}:${dateKey}`, cursor, R4_HELIUS_TTL_MS);
+async function writeR4ScanCursor(
+  resourceKey: R4ResourceKey,
+  dateKey: string,
+  eventType: "MINT" | "BURN",
+  cursor: string,
+): Promise<void> {
+  await writeSharedCacheString(R4_HELIUS_SCOPE, `cursor:${resourceKey}:${dateKey}:${eventType}`, cursor, R4_HELIUS_TTL_MS);
 }
 
 /**
@@ -1914,11 +1919,12 @@ async function scanR4ResourceIncremental(
   dateKey: string,
   midnightTs: number,
   existingActivity: R4ResourceActivity,
+  eventType: "MINT" | "BURN",
   maxPages = 50,
 ): Promise<{ activity: R4ResourceActivity; newCursor: string | null }> {
   if (!HELIUS_API_KEY) return { activity: existingActivity, newCursor: null };
 
-  const cursor = await readR4ScanCursor(resourceKey, dateKey);
+  const cursor = await readR4ScanCursor(resourceKey, dateKey, eventType);
 
   let burned = existingActivity.burned;
   let minted = existingActivity.minted;
@@ -1931,6 +1937,7 @@ async function scanR4ResourceIncremental(
     const url = new URL(`https://api.helius.xyz/v0/addresses/${mint}/transactions`);
     url.searchParams.set("api-key", HELIUS_API_KEY);
     url.searchParams.set("limit", "100");
+    url.searchParams.set("type", eventType);
     if (beforeSig) url.searchParams.set("before", beforeSig);
 
     const data = await fetchJsonWithTimeout(url.toString(), 20_000);
@@ -1955,14 +1962,14 @@ async function scanR4ResourceIncremental(
         break;
       }
 
-      // Accumulate burns and mints for this specific token
+      // Accumulate only the requested event type for this token
       for (const t of tx.tokenTransfers ?? []) {
         if (t.mint !== mint) continue;
         const amount = Number(t.tokenAmount) || 0;
         if (amount <= 0) continue;
-        if (!t.toUserAccount) {
+        if (eventType === "BURN" && !t.toUserAccount) {
           burned += amount; // BURN: tokens destroyed, toAccount is empty
-        } else if (!t.fromUserAccount) {
+        } else if (eventType === "MINT" && !t.fromUserAccount) {
           minted += amount; // MINT: tokens created, fromAccount is empty
         }
       }
@@ -2007,7 +2014,7 @@ async function scanR4MintBurnActivity(): Promise<void> {
     const mintEntries = Object.entries(R4_STAR_ATLAS_DEFAULT_MINTS) as [R4ResourceKey, string][];
     const results = await Promise.allSettled(
       mintEntries.map(([key, mint]) =>
-        scanR4ResourceIncremental(key, mint, dateKey, midnightTs, current[key]),
+        scanR4ResourceIncremental(key, mint, dateKey, midnightTs, current[key], "BURN"),
       ),
     );
 
@@ -2018,7 +2025,23 @@ async function scanR4MintBurnActivity(): Promise<void> {
         const result = results[idx];
         if (result.status === "fulfilled" && result.value.newCursor) {
           updated[key] = result.value.activity;
-          await writeR4ScanCursor(key, dateKey, result.value.newCursor);
+          await writeR4ScanCursor(key, dateKey, "BURN", result.value.newCursor);
+        }
+      }),
+    );
+
+    const mintResults = await Promise.allSettled(
+      mintEntries.map(([key, mint]) =>
+        scanR4ResourceIncremental(key, mint, dateKey, midnightTs, updated[key], "MINT"),
+      ),
+    );
+
+    await Promise.all(
+      mintEntries.map(async ([key], idx) => {
+        const result = mintResults[idx];
+        if (result.status === "fulfilled" && result.value.newCursor) {
+          updated[key] = result.value.activity;
+          await writeR4ScanCursor(key, dateKey, "MINT", result.value.newCursor);
         }
       }),
     );
@@ -3256,22 +3279,18 @@ async function fetchBridgeR4Metrics(): Promise<BridgeR4Metrics> {
 
     // Пересчитать createdToday и consumedToday из on-chain / Helius данных
     if (hasOnchainMintData) {
-      // Helius: burned = реальный расход за сегодня
       const heliusActivity = r4DailyActivity?.[resource.key as R4ResourceKey];
       if (heliusActivity && heliusActivity.burned > 0) {
         consumedToday = Number(heliusActivity.burned.toFixed(6));
       }
-      // Helius: minted = реально создано сегодня
       if (heliusActivity && heliusActivity.minted > 0) {
         createdToday = Number(heliusActivity.minted.toFixed(6));
       } else {
-        // Fallback: разница totalSupply vs вчерашний снимок (net = minted - burned)
         const yesterdayDateKey = formatUtcDateKey(new Date(now.getTime() - 86_400_000));
         const yesterdaySnap = balanceHistory.snapshots.find((s) => s.utcDateKey === yesterdayDateKey);
         if (yesterdaySnap) {
           const netChange = totalSupply - yesterdaySnap.totalSupply;
           if (netChange > 0) {
-            // Больше создали чем сожгли: minted ≈ netChange + burned
             createdToday = Number(Math.max(0, netChange + consumedToday).toFixed(6));
           }
         }
