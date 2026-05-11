@@ -1,0 +1,159 @@
+{
+  "generatedAt": "2026-05-11T05:38:19.471Z",
+  "source": {
+    "cargoPackage": "@staratlas/cargo",
+    "sagePackage": "@staratlas/sage",
+    "note": "Derived from installed SDK IDL and Anchor discriminator rule."
+  },
+  "cargoAccounts": [
+    {
+      "accountName": "cargoPod",
+      "discriminatorHex": "0xfa195207ba8acb22",
+      "discriminatorBase58": "iqGpLnXbPLm",
+      "minDataSize": 110,
+      "offsets": {
+        "version": 8,
+        "statsDefinition": 9,
+        "authority": 41,
+        "openTokenAccounts": 73,
+        "podSeeds": 74,
+        "podBump": 106,
+        "seqId": 107,
+        "unupdatedTokenAccounts": 109
+      },
+      "note": "fixed_struct",
+      "sdkMinDataSize": 110,
+      "sdkOffsetConstant": 110,
+      "docs": "Cargo pod has dynamic trailing u64 stats array decoded in SDK."
+    },
+    {
+      "accountName": "cargoType",
+      "discriminatorHex": "0xa6f145a22627e245",
+      "discriminatorBase58": "UvYxnvb18da",
+      "minDataSize": 110,
+      "offsets": {
+        "version": 8,
+        "statsDefinition": 9,
+        "mint": 41,
+        "creator": 73,
+        "bump": 105,
+        "statsCount": 106,
+        "seqId": 108
+      },
+      "note": "fixed_struct",
+      "sdkMinDataSize": 110,
+      "sdkOffsetConstant": 110,
+      "docs": "Cargo type has trailing dynamic stats values (u64 vector)."
+    },
+    {
+      "accountName": "cargoStatsDefinition",
+      "discriminatorHex": "0xe5b38b60e60b9bdf",
+      "discriminatorBase58": "fRPfcDcgPnE",
+      "minDataSize": 77,
+      "offsets": {
+        "version": 8,
+        "authority": 9,
+        "defaultCargoType": 41,
+        "statsCount": 73,
+        "seqId": 75
+      },
+      "note": "fixed_struct",
+      "sdkMinDataSize": 77,
+      "docs": "Stats definition contains static header; semantic meaning of stat indexes is external."
+    }
+  ],
+  "sageAccounts": [
+    {
+      "accountName": "resource",
+      "discriminatorHex": "0x415aa99eabd59fda",
+      "discriminatorBase58": "Bw1zcp4Eutd",
+      "minDataSize": 125,
+      "offsets": {
+        "version": 8,
+        "gameId": 9,
+        "location": 41,
+        "mineItem": 73,
+        "locationType": 105,
+        "systemRichness": 106,
+        "amountMined": 108,
+        "numMiners": 116,
+        "bump": 124
+      },
+      "note": "fixed_struct",
+      "sdkMinDataSize": 125,
+      "docs": "Contains amountMined and numMiners for mineable resources."
+    },
+    {
+      "accountName": "mineItem",
+      "discriminatorHex": "0x770b5070418765a2",
+      "discriminatorBase58": "LusuztBfRof",
+      "minDataSize": 148,
+      "offsets": {
+        "version": 8,
+        "gameId": 9,
+        "name": 41,
+        "mint": 105,
+        "resourceHardness": 137,
+        "numResourceAccounts": 139,
+        "bump": 147
+      },
+      "note": "fixed_struct",
+      "sdkMinDataSize": 148,
+      "docs": "Contains mint and resourceHardness metadata."
+    },
+    {
+      "accountName": "fleet",
+      "discriminatorHex": "0x3be2c5d77e25de25",
+      "discriminatorBase58": "B1y7wT5NWN8",
+      "minDataSize": null,
+      "offsets": {
+        "version": 8,
+        "gameId": 9,
+        "ownerProfile": 41,
+        "fleetShips": 73,
+        "subProfile": null
+      },
+      "note": "dynamic_or_defined_field_encountered",
+      "sdkMinDataSize": 439,
+      "docs": "Contains cargoHold/fuelTank/ammoBank cargo pod addresses."
+    },
+    {
+      "accountName": "sagePlayerProfile",
+      "discriminatorHex": "0xf93e4a90ce11883d",
+      "discriminatorBase58": "igyQPb3pVME",
+      "minDataSize": 74,
+      "offsets": {
+        "version": 8,
+        "playerProfile": 9,
+        "gameId": 41,
+        "bump": 73
+      },
+      "note": "fixed_struct",
+      "sdkMinDataSize": 74,
+      "docs": "Maps player profile to game context."
+    },
+    {
+      "accountName": "starbasePlayer",
+      "discriminatorHex": "0x4246691f569a5586",
+      "discriminatorBase58": "C5x9uNwPSA9",
+      "minDataSize": 170,
+      "offsets": {
+        "version": 8,
+        "playerProfile": 9,
+        "gameId": 41,
+        "starbase": 73,
+        "sagePlayerProfile": 105,
+        "bump": 137,
+        "shipEscrowCount": 138,
+        "oldTotalCrew": 142,
+        "newTotalCrew": 146,
+        "busyCrew": 150,
+        "updateId": 158,
+        "updatedShipEscrowCount": 166
+      },
+      "note": "fixed_struct",
+      "sdkMinDataSize": 170,
+      "docs": "Contains player-starbase relation and dynamic escrow records."
+    }
+  ]
+}
