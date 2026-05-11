@@ -1604,6 +1604,7 @@ function extractSageDecodedAccount(account: unknown): {
   data: {
     gameId?: unknown;
     mineItem?: unknown;
+    mint?: unknown;
     name?: number[];
     resourceHardness?: number;
     numMiners?: unknown;
@@ -1628,6 +1629,13 @@ function extractSageDecodedAccount(account: unknown): {
     data: {
       gameId: data.gameId,
       mineItem: data.mineItem,
+      mint:
+        data.mint ||
+        data.resourceMint ||
+        data.tokenMint ||
+        data.token ||
+        asRecord(data.resource)?.mint ||
+        asRecord(data.resource)?.tokenMint,
       name: Array.isArray(data.name) ? data.name as number[] : undefined,
       resourceHardness:
         typeof data.resourceHardness === "number" ? data.resourceHardness : undefined,
@@ -1755,6 +1763,7 @@ async function fetchSageMiningMetricsFromRPC(): Promise<BridgeMiningMetrics> {
           {
             name: decodeSageNameBytes(mineItemAccount.data.name || []),
             resourceHardness: mineItemAccount.data.resourceHardness,
+            mint: toBase58Like(mineItemAccount.data.mint),
           },
         ]),
     );
@@ -1947,9 +1956,26 @@ async function fetchSageMiningMetricsFromRPC(): Promise<BridgeMiningMetrics> {
       .sort((a, b) => b.totalFleets - a.totalFleets);
 
     const bridgeResourceMintMap = parseBridgeResourceMintMap(process.env.BRIDGE_RESOURCE_MINTS);
+    const onchainResourceMintMap = new Map<string, string>();
+    for (const mineItem of mineItemByKey.values()) {
+      if (!mineItem.name || !mineItem.mint) {
+        continue;
+      }
+
+      try {
+        const normalizedMint = new PublicKey(mineItem.mint).toBase58();
+        onchainResourceMintMap.set(normalizeResourceMintKey(mineItem.name), normalizedMint);
+      } catch {
+        continue;
+      }
+    }
+
     const resourceMintByName = new Map<string, string>();
     for (const resource of minedResources) {
-      const mint = bridgeResourceMintMap.get(normalizeResourceMintKey(resource.resource));
+      const resourceKey = normalizeResourceMintKey(resource.resource);
+      const mint =
+        onchainResourceMintMap.get(resourceKey) ||
+        bridgeResourceMintMap.get(resourceKey);
       if (mint) {
         resourceMintByName.set(resource.resource, mint);
       }

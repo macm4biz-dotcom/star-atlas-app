@@ -554,6 +554,12 @@ function formatTokenAmount(value?: number) {
   return value.toLocaleString("ru-RU", { maximumFractionDigits: 2 });
 }
 
+function formatMintShort(mint?: string) {
+  if (!mint) return "-";
+  if (mint.length <= 12) return mint;
+  return `${mint.slice(0, 6)}...${mint.slice(-6)}`;
+}
+
 function getErrorMessage(error: unknown) {
   if (error instanceof ApiRequestError) {
     return error.message || `HTTP ${error.status}`;
@@ -4321,6 +4327,7 @@ function App() {
                     <thead>
                       <tr>
                         <th>Ресурс</th>
+                        <th>Mint</th>
                         <th>Всего Флотов</th>
                         <th>Total Mined</th>
                         <th>У Игроков</th>
@@ -4338,6 +4345,19 @@ function App() {
                       {miningMetrics.resources.map((resource, idx: number) => (
                         <tr key={idx}>
                           <td className="resource-name">{resource.resource}</td>
+                          <td>
+                            {resource.resourceMint ? (
+                              <a
+                                href={`https://solscan.io/token/${resource.resourceMint}`}
+                                target="_blank"
+                                rel="noreferrer"
+                              >
+                                {formatMintShort(resource.resourceMint)}
+                              </a>
+                            ) : (
+                              "-"
+                            )}
+                          </td>
                           <td className="resource-total">
                             <strong>{resource.totalFleets}</strong>
                           </td>
