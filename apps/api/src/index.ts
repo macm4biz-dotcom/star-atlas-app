@@ -1884,6 +1884,7 @@ interface HeliusTokenTransfer {
 interface HeliusTxRecord {
   signature: string;
   timestamp: number;
+  type?: string;
   tokenTransfers?: HeliusTokenTransfer[];
 }
 
@@ -7279,9 +7280,7 @@ app.get("/api/bridge/admin/wallet-nfts", async (request, reply) => {
 });
 
 // ─── Whales: top holders & large trades for ATLAS and POLIS ─────────────────
-
-const ATLAS_MINT = "ATLASXmbPQxBUYbxPsV97usA3fPQYEqzQBUHgiFCUsXx";
-const POLIS_MINT = "poLisWXnNRwC6oB1vHiuKQzFjGL4XDSu4g9qjz9qVk";
+// (ATLAS_MINT / POLIS_MINT are declared above near /api/bridge/admin/wallet-assets)
 
 type WhaleHolder = {
   rank: number;
