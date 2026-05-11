@@ -1,0 +1,49 @@
+{
+  "events": [
+    {
+      "id": "audit-1778408512993-330",
+      "eventType": "alert-ack",
+      "role": "Captain",
+      "profile": "c4-transition",
+      "details": {
+        "alertId": "alt-bridge-1001",
+        "level": "critical",
+        "domain": "system",
+        "title": "RPC latency spike"
+      },
+      "createdAt": "2026-05-10T10:21:52.993Z"
+    },
+    {
+      "id": "audit-1778408300191-300",
+      "eventType": "preflight-run",
+      "role": "Captain",
+      "profile": "c4-transition",
+      "details": {
+        "operationType": "fleet-dispatch",
+        "operationValueUsd": 3500,
+        "routeComplexity": 3,
+        "riskTolerance": "medium",
+        "riskScore": 51,
+        "successProbability": 62,
+        "expectedPnlUsd": -821
+      },
+      "createdAt": "2026-05-10T10:18:20.191Z"
+    },
+    {
+      "id": "audit-1778354672693-828",
+      "eventType": "preflight-run",
+      "role": "Captain",
+      "profile": "c4-transition",
+      "details": {
+        "operationType": "recon",
+        "operationValueUsd": 3500,
+        "routeComplexity": 2,
+        "riskTolerance": "low",
+        "riskScore": 35,
+        "successProbability": 76,
+        "expectedPnlUsd": -535
+      },
+      "createdAt": "2026-05-09T19:24:32.693Z"
+    }
+  ]
+}

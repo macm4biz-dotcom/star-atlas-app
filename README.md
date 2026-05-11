@@ -178,6 +178,49 @@ cd /Users/biz/star-atlas-app
 
 Если Upstash переменные не заданы, API и bot автоматически работают в локальном fallback-режиме.
 
+## Captain's Bridge Live Map (Upstream)
+
+Для включения внешнего realtime-потока карты используйте переменную окружения API:
+
+- `BRIDGE_LIVE_MAP_UPSTREAM_URL`
+
+Пример для быстрого включения без отдельного сервиса (встроенный sample endpoint внутри API):
+
+- `BRIDGE_LIVE_MAP_UPSTREAM_URL=https://star-atlasapi-production.up.railway.app/api/bridge/upstream-sample`
+
+Дополнительно:
+
+- `BRIDGE_LIVE_MAP_TIMEOUT_MS` (по умолчанию `7500`)
+- `BRIDGE_DATA_INTEL_BASE_URL` (по умолчанию `https://data-intel-prod.uc.r.appspot.com`)
+- `BRIDGE_SAGE_PLAYERS_UPSTREAM_URL` (опционально; endpoint для метрики SAGE online)
+
+Примеры:
+
+- Прямой realtime источник игроков (если доступен):
+	`BRIDGE_SAGE_PLAYERS_UPSTREAM_URL=https://example.com/api/sage/players-online`
+- RYDN fallback (оценка по активности флотов):
+	`BRIDGE_SAGE_PLAYERS_UPSTREAM_URL=https://api.ryden.systems/api_fleets_all.php`
+
+Важно: для `api_fleets_all.php` UI показывает `estimate` (proxy по флотам), а не подтвержденное число уникальных игроков online.
+
+После установки переменной перезапустите API сервис. В UI Bridge карта покажет источник как `source upstream`.
+
+## Dev Admin Login (Password, No Wallet)
+
+Для локальной/временной разработки можно включить вход администратора по паролю без подписи кошельком.
+
+Переменные окружения API:
+
+- `DEV_ADMIN_PASSWORD_LOGIN_ENABLED=true`
+- `DEV_ADMIN_PASSWORD=<strong-dev-password>`
+- `DEV_ADMIN_WALLET=<admin-wallet>` (опционально; если не задан, берется первый кошелек из `WALLET_AUTH_ADMIN_WALLETS`)
+
+Важно:
+
+- По умолчанию функция выключена.
+- Используйте только в dev/test окружениях.
+- В production держите `DEV_ADMIN_PASSWORD_LOGIN_ENABLED=false`.
+
 ## Production Runbooks
 
 - Incident response: `deploy/runbooks/incident-response.md`

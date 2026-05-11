@@ -263,6 +263,13 @@ type MiningResourceData = {
   reserveSignalScore?: number;
   resourceHardness?: number;
   averageSystemRichness?: number;
+  // History-based signal fields
+  consumptionSignal?: "deficit-risk" | "balanced" | "surplus-risk";
+  consumptionScore?: number;
+  consumptionReason?: string;
+  estimatedCoverageDays?: number;
+  avgConsumptionLast7d?: number;
+  avgProductionLast7d?: number;
   byFaction: {
     MUD: number;
     ONI: number;
@@ -4537,9 +4544,37 @@ function App() {
                             {renderMetricWithTooltip(dailyMinedCompact, dailyMinedFull)}
                           </td>
                           <td>
-                            <span className={`reserve-signal-badge ${resource.reserveSignal || "balanced"}`}>
-                              {formatReserveSignal(resource.reserveSignal)}
-                            </span>
+                            {(() => {
+                              const signal = resource.consumptionSignal || resource.reserveSignal || "balanced";
+                              const tooltipParts = [];
+
+                              if (resource.consumptionReason) {
+                                tooltipParts.push(resource.consumptionReason);
+                              }
+
+                              if (resource.estimatedCoverageDays != null && resource.consumptionSignal === "deficit-risk") {
+                                const days = Math.ceil(resource.estimatedCoverageDays);
+                                tooltipParts.push(`Coverage: ~${days} day${days !== 1 ? "s" : ""}`);
+                              }
+
+                              if (resource.avgProductionLast7d != null && resource.avgConsumptionLast7d != null) {
+                                const prod = resource.avgProductionLast7d.toFixed(1);
+                                const cons = resource.avgConsumptionLast7d.toFixed(1);
+                                tooltipParts.push(`Prod: ${prod}/day · Cons: ${cons}/day`);
+                              }
+
+                              const tooltip = tooltipParts.length > 0 ? tooltipParts.join(" · ") : undefined;
+
+                              return (
+                                <span
+                                  className={`reserve-signal-badge ${signal}`}
+                                  title={tooltip}
+                                  tabIndex={0}
+                                >
+                                  {formatReserveSignal(signal)}
+                                </span>
+                              );
+                            })()}
                           </td>
                           <td>{resource.resourceHardness ?? "-"}</td>
                           <td>

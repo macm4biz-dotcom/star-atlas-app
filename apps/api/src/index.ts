@@ -1306,6 +1306,13 @@ type MiningResourceData = {
   reserveSignalScore?: number;
   resourceHardness?: number;
   averageSystemRichness?: number;
+  // History-based signal fields
+  consumptionSignal?: "deficit-risk" | "balanced" | "surplus-risk";
+  consumptionScore?: number;
+  consumptionReason?: string;
+  estimatedCoverageDays?: number;
+  avgConsumptionLast7d?: number;
+  avgProductionLast7d?: number;
 };
 
 type BridgeResourceReserveSummary = {
@@ -1426,6 +1433,236 @@ function getUtcDayEndTtlMs(date: Date) {
   // Keep baseline available through the next UTC day to survive delayed requests and restarts.
   const nextReset = getNextUtcReset(date);
   return Math.max(1, nextReset.getTime() - date.getTime() + 24 * 60 * 60 * 1000);
+}
+
+/**
+ * Daily history snapshot for tracking consumption/production trends
+ */
+type MiningResourceHistorySnapshot = {
+  utcDateKey: string;
+  totalMined: string; // cumulative on-chain total
+  dailyMined: string; // delta from previous day
+  playerWalletBalance: number; // current holdings
+  developerWalletBalance: number;
+};
+
+type MiningResourceHistory = {
+  resource: string;
+  snapshots: MiningResourceHistorySnapshot[]; // ordered by date, max 10 days
+};
+
+/**
+ * Consumption metrics derived from historical snapshots
+ */
+type ConsumptionMetrics = {
+  avgProductionLast7d: number; // average dailyMined
+  avgConsumptionLast7d: number; // average balance change
+  balanceChangeLastDay: number; // playerBalance today vs yesterday
+  balanceChangeLastWeek: number; // cumulative change over 7 days
+  deficitDaysConsecutive: number; // how many consecutive days: consumption > production
+  estimatedCoverageDays: number; // how long current holdings sustain current consumption
+};
+
+const MINING_HISTORY_CACHE_PREFIX = "mining:history:";
+const MINING_HISTORY_MAX_DAYS = 10;
+
+/**
+ * Load resource history from cache (Upstash Redis or memory)
+ */
+async function readMiningResourceHistory(resource: string): Promise<MiningResourceHistory | null> {
+  const cacheKey = `${MINING_HISTORY_CACHE_PREFIX}${normalizeResourceMintKey(resource)}`;
+  
+  if (SHARED_CACHE_ENABLED) {
+    try {
+      const cached = await readSharedCacheString<MiningResourceHistory>(
+        MINING_HISTORY_CACHE_PREFIX,
+        normalizeResourceMintKey(resource),
+      );
+      if (cached?.resource === resource && Array.isArray(cached.snapshots)) {
+        return cached;
+      }
+    } catch (error) {
+      app.log.warn({ resource, error: String(error) }, "Failed to read mining history from cache");
+    }
+  }
+
+  // For now, we only keep in-memory cache. History will be rebuilt from Redis on restart.
+  return null;
+}
+
+/**
+ * Save resource history to cache
+ */
+async function writeMiningResourceHistory(history: MiningResourceHistory) {
+  if (!SHARED_CACHE_ENABLED) {
+    return;
+  }
+
+  try {
+    const ttlSeconds = MINING_HISTORY_MAX_DAYS * 24 * 60 * 60;
+    await writeSharedCacheString(
+      MINING_HISTORY_CACHE_PREFIX,
+      normalizeResourceMintKey(history.resource),
+      history,
+      ttlSeconds * 1000,
+    );
+  } catch (error) {
+    app.log.warn(
+      { resource: history.resource, error: String(error) },
+      "Failed to write mining history to cache",
+    );
+  }
+}
+
+/**
+ * Append a new daily snapshot to resource history, maintaining max 10-day window
+ */
+async function appendMiningHistorySnapshot(
+  resource: string,
+  snapshot: MiningResourceHistorySnapshot,
+): Promise<MiningResourceHistory> {
+  let history = await readMiningResourceHistory(resource);
+  
+  if (!history) {
+    history = { resource, snapshots: [] };
+  }
+
+  // Remove duplicate today's snapshot if exists
+  history.snapshots = history.snapshots.filter((s) => s.utcDateKey !== snapshot.utcDateKey);
+
+  // Add new snapshot
+  history.snapshots.push(snapshot);
+
+  // Keep only last 10 days
+  if (history.snapshots.length > MINING_HISTORY_MAX_DAYS) {
+    history.snapshots = history.snapshots.slice(-MINING_HISTORY_MAX_DAYS);
+  }
+
+  await writeMiningResourceHistory(history);
+  return history;
+}
+
+/**
+ * Calculate consumption metrics from historical snapshots
+ * Consumption = how much holdings decreased (or increased if negative consumption)
+ * Production = dailyMined from on-chain
+ */
+function calculateConsumptionMetrics(
+  history: MiningResourceHistory,
+  currentPlayerBalance: number,
+): ConsumptionMetrics {
+  const snapshots = history.snapshots;
+  if (snapshots.length === 0) {
+    return {
+      avgProductionLast7d: 0,
+      avgConsumptionLast7d: 0,
+      balanceChangeLastDay: 0,
+      balanceChangeLastWeek: 0,
+      deficitDaysConsecutive: 0,
+      estimatedCoverageDays: 0,
+    };
+  }
+
+  // Parse daily mined values (production)
+  const last7Snapshots = snapshots.slice(-7);
+  const dailyProduction = last7Snapshots.map((s) => Number(s.dailyMined || 0));
+  const avgProduction = dailyProduction.length > 0
+    ? dailyProduction.reduce((a, b) => a + b, 0) / dailyProduction.length
+    : 0;
+
+  // Calculate balance changes (consumption proxy)
+  const balanceChanges: number[] = [];
+  for (let i = 1; i < snapshots.length; i++) {
+    const prevBalance = snapshots[i - 1].playerWalletBalance;
+    const currBalance = snapshots[i].playerWalletBalance;
+    const change = prevBalance - currBalance; // positive = consumption (balance decreased)
+    balanceChanges.push(change);
+  }
+
+  // Current balance vs yesterday
+  let balanceChangeLastDay = 0;
+  if (snapshots.length >= 2) {
+    const yesterday = snapshots[snapshots.length - 2];
+    balanceChangeLastDay = yesterday.playerWalletBalance - currentPlayerBalance;
+  }
+
+  // Total balance change over last 7 days
+  let balanceChangeLastWeek = 0;
+  const weekSnapshots = snapshots.slice(-8); // current + 7 prior
+  if (weekSnapshots.length >= 2) {
+    balanceChangeLastWeek = weekSnapshots[0].playerWalletBalance - currentPlayerBalance;
+  }
+
+  // Average consumption (balance decrease per day)
+  const last7Consumptions = balanceChanges.slice(-7);
+  const avgConsumption = last7Consumptions.length > 0
+    ? last7Consumptions.reduce((a, b) => a + b, 0) / last7Consumptions.length
+    : 0;
+
+  // Count consecutive deficit days (consumption > production)
+  let deficitDaysConsecutive = 0;
+  for (let i = balanceChanges.length - 1; i >= 0; i--) {
+    const consumption = Math.max(0, balanceChanges[i]); // only count positive consumption
+    const production = i < dailyProduction.length ? dailyProduction[i] : 0;
+    if (consumption > production * 1.1) { // 10% margin to account for rounding
+      deficitDaysConsecutive += 1;
+    } else {
+      break;
+    }
+  }
+
+  // Estimated coverage in days (how long holdings can sustain current consumption)
+  let estimatedCoverageDays = 0;
+  if (avgConsumption > 0) {
+    estimatedCoverageDays = Math.max(0, currentPlayerBalance / avgConsumption);
+  }
+
+  return {
+    avgProductionLast7d: avgProduction,
+    avgConsumptionLast7d: avgConsumption,
+    balanceChangeLastDay,
+    balanceChangeLastWeek,
+    deficitDaysConsecutive,
+    estimatedCoverageDays,
+  };
+}
+
+/**
+ * Updated signal estimation based on historical consumption vs production
+ */
+function estimateReserveSignalFromHistory(
+  consumption: ConsumptionMetrics,
+  productionLast7d: number,
+): { signal: "deficit-risk" | "balanced" | "surplus-risk"; score: number; reason: string } {
+  const score = consumption.avgProductionLast7d > 0
+    ? consumption.avgConsumptionLast7d / consumption.avgProductionLast7d
+    : 0;
+
+  // Deficit risk: consumption > production for 3+ consecutive days
+  if (consumption.deficitDaysConsecutive >= 3) {
+    const daysUntilEmpty = Math.ceil(consumption.estimatedCoverageDays);
+    return {
+      signal: "deficit-risk",
+      score,
+      reason: `Deficit for ${consumption.deficitDaysConsecutive} days, ~${daysUntilEmpty} days coverage`,
+    };
+  }
+
+  // Surplus risk: production >> consumption (production more than 2x consumption)
+  if (consumption.avgConsumptionLast7d > 0 && productionLast7d > consumption.avgConsumptionLast7d * 2) {
+    return {
+      signal: "surplus-risk",
+      score,
+      reason: `Surplus: ${productionLast7d.toFixed(0)} mined vs ${consumption.avgConsumptionLast7d.toFixed(0)} consumed`,
+    };
+  }
+
+  // Balanced: production roughly matches consumption
+  return {
+    signal: "balanced",
+    score,
+    reason: `Balanced: ${productionLast7d.toFixed(0)} mined ≈ ${consumption.avgConsumptionLast7d.toFixed(0)} consumed`,
+  };
 }
 
 function estimateReserveSignal(params: {
@@ -2052,6 +2289,61 @@ async function fetchSageMiningMetricsFromRPC(): Promise<BridgeMiningMetrics> {
       totalPlayerWalletBalance += playerBalance;
       totalDeveloperWalletBalance += developerBalance;
       walletCoverageResources += 1;
+    }
+
+    // ===== HISTORY-BASED SIGNAL CALCULATION =====
+    // Append daily snapshots to history and compute consumption metrics
+    for (const resource of minedResources) {
+      try {
+        const dailyMinedNum = parseIntegerLike(resource.dailyMined) || 0n;
+        const playerBalance = resource.playerWalletBalance || 0;
+        const developerBalance = resource.developerWalletBalance || 0;
+
+        // Create today's snapshot
+        const snapshot: MiningResourceHistorySnapshot = {
+          utcDateKey,
+          totalMined: resource.totalMined || "0",
+          dailyMined: dailyMinedNum.toString(),
+          playerWalletBalance: playerBalance,
+          developerWalletBalance: developerBalance,
+        };
+
+        // Append to history
+        const history = await appendMiningHistorySnapshot(resource.resource, snapshot);
+
+        // Calculate consumption metrics
+        const consumption = calculateConsumptionMetrics(history, playerBalance);
+
+        // Compute history-based signal
+        const historySignal = estimateReserveSignalFromHistory(
+          consumption,
+          parseFloat(resource.dailyMined || "0"),
+        );
+
+        // Add to resource data
+        resource.consumptionSignal = historySignal.signal;
+        resource.consumptionScore = historySignal.score;
+        resource.consumptionReason = historySignal.reason;
+        resource.estimatedCoverageDays = consumption.estimatedCoverageDays;
+        resource.avgConsumptionLast7d = consumption.avgConsumptionLast7d;
+        resource.avgProductionLast7d = consumption.avgProductionLast7d;
+
+        // Update signal deficits based on history (if we have enough history)
+        if (history.snapshots.length >= 3) {
+          if (historySignal.signal === "deficit-risk") {
+            deficitRiskCount += 1;
+          } else if (historySignal.signal === "surplus-risk") {
+            surplusRiskCount += 1;
+          } else {
+            balancedCount += 1;
+          }
+        }
+      } catch (error) {
+        app.log.warn(
+          { resource: resource.resource, error: String(error) },
+          "Failed to process mining history for resource",
+        );
+      }
     }
 
     miningDailyBaselineMemory = baseline;
