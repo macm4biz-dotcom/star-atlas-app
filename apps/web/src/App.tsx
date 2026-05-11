@@ -4789,21 +4789,20 @@ function App() {
                         const mintInfo = resource.mint
                           ? `${formatR4MintSourceLabel(resource.mintSource)} · ${formatMintShort(resource.mint)}`
                           : "missing";
+                        const solscanUrl = resource.mint
+                          ? `https://solscan.io/token/${resource.mint}`
+                          : `https://solscan.io/search?query=${encodeURIComponent(resource.label)}`;
 
                         return (
                           <tr key={resource.key} className={resource.mint ? "" : "resource-row-no-mint"}>
                             <td className="resource-name">
-                              {resource.mint ? (
-                                <a
-                                  href={`https://solscan.io/token/${resource.mint}`}
-                                  target="_blank"
-                                  rel="noreferrer"
-                                >
-                                  {resource.label}
-                                </a>
-                              ) : (
-                                resource.label
-                              )}
+                              <a
+                                href={solscanUrl}
+                                target="_blank"
+                                rel="noreferrer"
+                              >
+                                {resource.label}
+                              </a>
                               <div className="mint-source">{mintInfo}</div>
                             </td>
                             <td className="metric-compact">{renderMetricWithTooltip(
