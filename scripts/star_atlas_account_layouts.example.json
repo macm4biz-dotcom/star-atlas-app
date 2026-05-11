@@ -1,0 +1,37 @@
+{
+  "note": "Fill discriminator + offsets from Star Atlas IDL. Offsets are absolute byte positions in account data.",
+  "targets": [
+    {
+      "name": "cargo_player_inventory",
+      "enabled": false,
+      "program_id": "Cargo2VNTPPTi9c1vq1Jw5d3BWUNr18MjRtSupAghKEk",
+      "data_size": null,
+      "memcmp": [],
+      "decoder": {
+        "type": "u64_fields",
+        "discriminator_hex": null,
+        "fields": {
+          "food": null,
+          "fuel": null,
+          "ammo": null,
+          "toolkits": null
+        }
+      }
+    },
+    {
+      "name": "sage_resource_account",
+      "enabled": false,
+      "program_id": "SAGE2HAwep459SNq61LHvjxPk4pLPEJLoMETef7f7EE",
+      "decoder": {
+        "type": "u64_fields",
+        "discriminator_hex": null,
+        "fields": {
+          "food": null,
+          "fuel": null,
+          "ammo": null,
+          "toolkits": null
+        }
+      }
+    }
+  ]
+}
