@@ -2060,3 +2060,204 @@ th {
 .craft-pending:hover {
   background: rgba(180, 180, 180, 0.05);
 }
+
+/* ─── Whales SA tab ──────────────────────────────────────────────────── */
+.whales-section {
+  padding: 24px 0;
+}
+
+.whales-section .section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 24px;
+}
+
+.whales-section .section-header h2 {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 700;
+}
+
+.section-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.data-freshness {
+  font-size: 12px;
+  color: rgba(255,255,255,0.45);
+}
+
+.whales-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 32px;
+}
+
+@media (max-width: 900px) {
+  .whales-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.whales-col {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.whale-panel {
+  background: rgba(255,255,255,0.04);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+.whale-panel-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0;
+  padding: 14px 16px;
+  font-size: 15px;
+  font-weight: 600;
+  background: rgba(255,255,255,0.03);
+  border-bottom: 1px solid rgba(255,255,255,0.07);
+}
+
+.whale-token-badge {
+  display: inline-block;
+  padding: 2px 10px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+}
+
+.atlas-badge {
+  background: rgba(80, 180, 255, 0.18);
+  color: #50b4ff;
+  border: 1px solid rgba(80, 180, 255, 0.3);
+}
+
+.polis-badge {
+  background: rgba(180, 130, 255, 0.18);
+  color: #c896ff;
+  border: 1px solid rgba(180, 130, 255, 0.3);
+}
+
+.whale-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.whale-table th {
+  padding: 8px 12px;
+  text-align: left;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: rgba(255,255,255,0.45);
+  border-bottom: 1px solid rgba(255,255,255,0.07);
+}
+
+.whale-table td {
+  padding: 8px 12px;
+  border-bottom: 1px solid rgba(255,255,255,0.04);
+  color: rgba(255,255,255,0.85);
+  vertical-align: middle;
+}
+
+.whale-table tr:last-child td {
+  border-bottom: none;
+}
+
+.whale-table tr:hover td {
+  background: rgba(255,255,255,0.03);
+}
+
+.rank-cell {
+  font-weight: 700;
+  color: rgba(255,255,255,0.4) !important;
+  width: 28px;
+  text-align: center;
+}
+
+.wallet-cell {
+  font-family: monospace;
+  font-size: 12px;
+}
+
+.wallet-link {
+  color: rgba(129, 200, 255, 0.85);
+  text-decoration: none;
+}
+
+.wallet-link:hover {
+  color: #81c8ff;
+  text-decoration: underline;
+}
+
+.amount-cell {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
+.time-cell {
+  font-size: 11px;
+  color: rgba(255,255,255,0.5);
+  white-space: nowrap;
+}
+
+.dir-cell {
+  white-space: nowrap;
+}
+
+.direction-badge {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+.direction-buy {
+  background: rgba(80, 220, 130, 0.12);
+  color: #50dc82;
+}
+
+.direction-sell {
+  background: rgba(255, 80, 80, 0.12);
+  color: #ff6060;
+}
+
+.direction-transfer {
+  background: rgba(180, 180, 180, 0.12);
+  color: rgba(200, 200, 200, 0.7);
+}
+
+.tx-cell {
+  font-family: monospace;
+  font-size: 11px;
+}
+
+.no-data {
+  text-align: center;
+  color: rgba(255,255,255,0.3) !important;
+  padding: 20px !important;
+  font-style: italic;
+}
+
+.trade-buy td {
+  background: rgba(80, 220, 130, 0.02);
+}
+
+.trade-sell td {
+  background: rgba(255, 80, 80, 0.02);
+}

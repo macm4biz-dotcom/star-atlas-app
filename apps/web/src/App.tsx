@@ -538,6 +538,34 @@ type CraftReferenceCategory = {
   items: CraftCatalogItem[];
 };
 
+type WhaleHolder = {
+  rank: number;
+  wallet: string;
+  tokenAccount: string;
+  amount: number;
+  uiAmount: string;
+};
+
+type WhaleTrade = {
+  rank: number;
+  signature: string;
+  timestamp: number;
+  type: string;
+  direction: "buy" | "sell" | "transfer";
+  amount: number;
+  uiAmount: string;
+  fromWallet: string;
+  toWallet: string;
+};
+
+type WhalesSnapshot = {
+  fetchedAt: string;
+  atlasHolders: WhaleHolder[];
+  polisHolders: WhaleHolder[];
+  atlasTrades: WhaleTrade[];
+  polisTrades: WhaleTrade[];
+};
+
 const LOCAL_CRAFT_REFERENCE_ITEMS: CraftCatalogItem[] = [
   { name: "Aerogel", group: "compound-material", tier: null, verified: false, recipeDraft: "-", output: "1x", status: "Справочник" },
   { name: "Crystal Lattice", group: "compound-material", tier: null, verified: false, recipeDraft: "-", output: "1x", status: "Справочник" },
@@ -845,7 +873,7 @@ function App() {
   const { connection } = useConnection();
   const { publicKey, connected, signMessage, signTransaction } = useWallet();
   const [activeTab, setActiveTab] = useState<
-    "news" | "archive" | "dashboard" | "bridge" | "market" | "intel" | "resources"
+    "news" | "archive" | "dashboard" | "bridge" | "market" | "intel" | "resources" | "whales"
   >(
     "news",
   );
@@ -922,6 +950,9 @@ function App() {
   const [craftCatalog, setCraftCatalog] = useState<BridgeCraftCatalogResponse | null>(null);
   const [craftCatalogLoading, setCraftCatalogLoading] = useState(false);
   const [craftCatalogError, setCraftCatalogError] = useState<string | null>(null);
+  const [whalesData, setWhalesData] = useState<WhalesSnapshot | null>(null);
+  const [whalesLoading, setWhalesLoading] = useState(false);
+  const [whalesError, setWhalesError] = useState<string | null>(null);
   const [bridgeRole, setBridgeRole] = useState<BridgeRole>("Captain");
   const [bridgeProfile, setBridgeProfile] = useState<BridgeC4Profile>("c4-transition");
   const [bridgeConfig, setBridgeConfig] = useState<BridgeConfig | null>(null);
@@ -2213,6 +2244,20 @@ function App() {
     }
   }, []);
 
+  const loadWhales = useCallback(async () => {
+    setWhalesLoading(true);
+    setWhalesError(null);
+    try {
+      const payload = await apiRequest<WhalesSnapshot>("/api/whales");
+      setWhalesData(payload);
+    } catch (requestError) {
+      setWhalesError("Не удалось загрузить данные по китам. Попробуй позже.");
+      console.error(requestError);
+    } finally {
+      setWhalesLoading(false);
+    }
+  }, []);
+
   const loadBridgeRuntime = useCallback(async (
     role: BridgeRole = bridgeRole,
     profile: BridgeC4Profile = bridgeProfile,
@@ -2465,7 +2510,11 @@ function App() {
     }
   }, [activeTab, craftCatalog, craftCatalogLoading, loadCraftCatalog]);
 
-
+  useEffect(() => {
+    if (activeTab === "whales" && !whalesData && !whalesLoading) {
+      void loadWhales();
+    }
+  }, [activeTab, whalesData, whalesLoading, loadWhales]);
 
   useEffect(() => {
     if (activeTab === "archive" && !archiveData && !archiveLoading) {
@@ -2809,6 +2858,13 @@ function App() {
           onClick={() => setActiveTab("resources")}
         >
           Ресурсы
+        </button>
+        <button
+          type="button"
+          className={activeTab === "whales" ? "section-tab active" : "section-tab"}
+          onClick={() => setActiveTab("whales")}
+        >
+          🐋 КИТЫ SA
         </button>
         <button
           type="button"
@@ -4981,6 +5037,239 @@ function App() {
               </table>
             </div>
           </div>
+        </section>
+      ) : null}
+
+      {activeTab === "whales" ? (
+        <section className="section whales-section">
+          <div className="section-header">
+            <h2>🐋 КИТЫ SA</h2>
+            <div className="section-header-actions">
+              {whalesData ? (
+                <span className="data-freshness">
+                  Обновлено: {new Date(whalesData.fetchedAt).toLocaleString("ru-RU", { timeZone: "UTC", hour12: false })} UTC
+                </span>
+              ) : null}
+              <button
+                type="button"
+                className="btn-secondary"
+                onClick={() => { setWhalesData(null); void loadWhales(); }}
+                disabled={whalesLoading}
+              >
+                {whalesLoading ? "Загрузка…" : "↻ Обновить"}
+              </button>
+            </div>
+          </div>
+
+          {whalesError ? (
+            <div className="error-banner">{whalesError}</div>
+          ) : null}
+
+          {whalesLoading && !whalesData ? (
+            <div className="loading-state">Загружаем данные по китам…</div>
+          ) : null}
+
+          {whalesData ? (
+            <div className="whales-grid">
+              {/* ── ATLAS column ── */}
+              <div className="whales-col">
+                {/* Top-10 ATLAS holders */}
+                <div className="whale-panel">
+                  <h3 className="whale-panel-title">
+                    <span className="whale-token-badge atlas-badge">ATLAS</span>
+                    Топ-10 холдеров
+                  </h3>
+                  <table className="whale-table">
+                    <thead>
+                      <tr>
+                        <th>#</th>
+                        <th>Кошелёк</th>
+                        <th>Кол-во</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {whalesData.atlasHolders.length === 0 ? (
+                        <tr><td colSpan={3} className="no-data">Нет данных</td></tr>
+                      ) : whalesData.atlasHolders.map((h) => (
+                        <tr key={h.tokenAccount}>
+                          <td className="rank-cell">{h.rank}</td>
+                          <td className="wallet-cell">
+                            <a
+                              href={`https://solscan.io/account/${h.wallet}`}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="wallet-link"
+                              title={h.wallet}
+                            >
+                              {h.wallet.slice(0, 4)}…{h.wallet.slice(-4)}
+                            </a>
+                          </td>
+                          <td className="amount-cell">{Number(h.uiAmount).toLocaleString("en-US", { maximumFractionDigits: 0 })}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+
+                {/* Top-10 ATLAS large trades */}
+                <div className="whale-panel">
+                  <h3 className="whale-panel-title">
+                    <span className="whale-token-badge atlas-badge">ATLAS</span>
+                    Крупные сделки 24ч
+                  </h3>
+                  <table className="whale-table">
+                    <thead>
+                      <tr>
+                        <th>#</th>
+                        <th>Время UTC</th>
+                        <th>Тип</th>
+                        <th>Кол-во</th>
+                        <th>От</th>
+                        <th>Кому</th>
+                        <th>Tx</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {whalesData.atlasTrades.length === 0 ? (
+                        <tr><td colSpan={7} className="no-data">Нет крупных сделок за 24ч</td></tr>
+                      ) : whalesData.atlasTrades.map((t) => (
+                        <tr key={`${t.signature}-${t.direction}`} className={`trade-row trade-${t.direction}`}>
+                          <td className="rank-cell">{t.rank}</td>
+                          <td className="time-cell">
+                            {new Date(t.timestamp * 1000).toLocaleTimeString("ru-RU", { timeZone: "UTC", hour12: false })}
+                          </td>
+                          <td className="dir-cell">
+                            <span className={`direction-badge direction-${t.direction}`}>
+                              {t.direction === "buy" ? "🟢 BUY" : t.direction === "sell" ? "🔴 SELL" : "↔ MOVE"}
+                            </span>
+                          </td>
+                          <td className="amount-cell">{t.uiAmount}</td>
+                          <td className="wallet-cell">
+                            {t.fromWallet ? (
+                              <a href={`https://solscan.io/account/${t.fromWallet}`} target="_blank" rel="noopener noreferrer" className="wallet-link" title={t.fromWallet}>
+                                {t.fromWallet.slice(0, 4)}…{t.fromWallet.slice(-4)}
+                              </a>
+                            ) : "—"}
+                          </td>
+                          <td className="wallet-cell">
+                            {t.toWallet ? (
+                              <a href={`https://solscan.io/account/${t.toWallet}`} target="_blank" rel="noopener noreferrer" className="wallet-link" title={t.toWallet}>
+                                {t.toWallet.slice(0, 4)}…{t.toWallet.slice(-4)}
+                              </a>
+                            ) : "—"}
+                          </td>
+                          <td className="tx-cell">
+                            <a href={`https://solscan.io/tx/${t.signature}`} target="_blank" rel="noopener noreferrer" className="wallet-link" title={t.signature}>
+                              {t.signature.slice(0, 6)}…
+                            </a>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              {/* ── POLIS column ── */}
+              <div className="whales-col">
+                {/* Top-10 POLIS holders */}
+                <div className="whale-panel">
+                  <h3 className="whale-panel-title">
+                    <span className="whale-token-badge polis-badge">POLIS</span>
+                    Топ-10 холдеров
+                  </h3>
+                  <table className="whale-table">
+                    <thead>
+                      <tr>
+                        <th>#</th>
+                        <th>Кошелёк</th>
+                        <th>Кол-во</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {whalesData.polisHolders.length === 0 ? (
+                        <tr><td colSpan={3} className="no-data">Нет данных</td></tr>
+                      ) : whalesData.polisHolders.map((h) => (
+                        <tr key={h.tokenAccount}>
+                          <td className="rank-cell">{h.rank}</td>
+                          <td className="wallet-cell">
+                            <a
+                              href={`https://solscan.io/account/${h.wallet}`}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="wallet-link"
+                              title={h.wallet}
+                            >
+                              {h.wallet.slice(0, 4)}…{h.wallet.slice(-4)}
+                            </a>
+                          </td>
+                          <td className="amount-cell">{Number(h.uiAmount).toLocaleString("en-US", { maximumFractionDigits: 0 })}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+
+                {/* Top-10 POLIS large trades */}
+                <div className="whale-panel">
+                  <h3 className="whale-panel-title">
+                    <span className="whale-token-badge polis-badge">POLIS</span>
+                    Крупные сделки 24ч
+                  </h3>
+                  <table className="whale-table">
+                    <thead>
+                      <tr>
+                        <th>#</th>
+                        <th>Время UTC</th>
+                        <th>Тип</th>
+                        <th>Кол-во</th>
+                        <th>От</th>
+                        <th>Кому</th>
+                        <th>Tx</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {whalesData.polisTrades.length === 0 ? (
+                        <tr><td colSpan={7} className="no-data">Нет крупных сделок за 24ч</td></tr>
+                      ) : whalesData.polisTrades.map((t) => (
+                        <tr key={`${t.signature}-${t.direction}`} className={`trade-row trade-${t.direction}`}>
+                          <td className="rank-cell">{t.rank}</td>
+                          <td className="time-cell">
+                            {new Date(t.timestamp * 1000).toLocaleTimeString("ru-RU", { timeZone: "UTC", hour12: false })}
+                          </td>
+                          <td className="dir-cell">
+                            <span className={`direction-badge direction-${t.direction}`}>
+                              {t.direction === "buy" ? "🟢 BUY" : t.direction === "sell" ? "🔴 SELL" : "↔ MOVE"}
+                            </span>
+                          </td>
+                          <td className="amount-cell">{t.uiAmount}</td>
+                          <td className="wallet-cell">
+                            {t.fromWallet ? (
+                              <a href={`https://solscan.io/account/${t.fromWallet}`} target="_blank" rel="noopener noreferrer" className="wallet-link" title={t.fromWallet}>
+                                {t.fromWallet.slice(0, 4)}…{t.fromWallet.slice(-4)}
+                              </a>
+                            ) : "—"}
+                          </td>
+                          <td className="wallet-cell">
+                            {t.toWallet ? (
+                              <a href={`https://solscan.io/account/${t.toWallet}`} target="_blank" rel="noopener noreferrer" className="wallet-link" title={t.toWallet}>
+                                {t.toWallet.slice(0, 4)}…{t.toWallet.slice(-4)}
+                              </a>
+                            ) : "—"}
+                          </td>
+                          <td className="tx-cell">
+                            <a href={`https://solscan.io/tx/${t.signature}`} target="_blank" rel="noopener noreferrer" className="wallet-link" title={t.signature}>
+                              {t.signature.slice(0, 6)}…
+                            </a>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          ) : null}
         </section>
       ) : null}
     </main>

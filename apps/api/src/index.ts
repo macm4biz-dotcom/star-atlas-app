@@ -7278,6 +7278,159 @@ app.get("/api/bridge/admin/wallet-nfts", async (request, reply) => {
   };
 });
 
+// ─── Whales: top holders & large trades for ATLAS and POLIS ─────────────────
+
+const ATLAS_MINT = "ATLASXmbPQxBUYbxPsV97usA3fPQYEqzQBUHgiFCUsXx";
+const POLIS_MINT = "poLisWXnNRwC6oB1vHiuKQzFjGL4XDSu4g9qjz9qVk";
+
+type WhaleHolder = {
+  rank: number;
+  wallet: string;
+  tokenAccount: string;
+  amount: number;
+  uiAmount: string;
+};
+
+type WhaleTrade = {
+  rank: number;
+  signature: string;
+  timestamp: number;
+  type: string;
+  direction: "buy" | "sell" | "transfer";
+  amount: number;
+  uiAmount: string;
+  fromWallet: string;
+  toWallet: string;
+};
+
+type WhalesSnapshot = {
+  fetchedAt: string;
+  atlasHolders: WhaleHolder[];
+  polisHolders: WhaleHolder[];
+  atlasTrades: WhaleTrade[];
+  polisTrades: WhaleTrade[];
+};
+
+let whalesCache: { data: WhalesSnapshot; expiresAt: number } | null = null;
+// Invalidate at next UTC midnight
+function nextUtcMidnightMs() {
+  const now = new Date();
+  const midnight = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1));
+  return midnight.getTime();
+}
+
+async function fetchTopHolders(mint: string, connection: Connection): Promise<WhaleHolder[]> {
+  try {
+    const result = await connection.getTokenLargestAccounts(new PublicKey(mint), "confirmed");
+    const accounts = result.value.slice(0, 10);
+
+    // Batch fetch owner for each token account
+    const pubkeys = accounts.map((a) => new PublicKey(a.address));
+    const infos = await connection.getMultipleParsedAccounts(pubkeys);
+
+    return accounts.map((acc, i) => {
+      const info = infos.value[i];
+      let owner = acc.address.toString();
+      try {
+        const parsed = (info?.data as { parsed?: { info?: { owner?: string } } })?.parsed;
+        if (parsed?.info?.owner) owner = parsed.info.owner;
+      } catch { /* ignore */ }
+      const uiAmt = acc.uiAmountString ?? String((acc.amount ? Number(acc.amount) / 1e8 : 0).toFixed(2));
+      return {
+        rank: i + 1,
+        wallet: owner,
+        tokenAccount: acc.address.toString(),
+        amount: Number(acc.uiAmount ?? 0),
+        uiAmount: uiAmt,
+      };
+    });
+  } catch {
+    return [];
+  }
+}
+
+async function fetchLargeTrades(mint: string): Promise<WhaleTrade[]> {
+  if (!HELIUS_API_KEY) return [];
+  const since24h = Math.floor(Date.now() / 1000) - 86400;
+  const trades: WhaleTrade[] = [];
+  let beforeSig: string | null = null;
+
+  for (let page = 0; page < 20; page++) {
+    const url = new URL(`https://api.helius.xyz/v0/addresses/${mint}/transactions`);
+    url.searchParams.set("api-key", HELIUS_API_KEY);
+    url.searchParams.set("limit", "100");
+    if (beforeSig) url.searchParams.set("before", beforeSig);
+
+    const data = await fetchJsonWithTimeout(url.toString(), 20_000);
+    if (!Array.isArray(data) || data.length === 0) break;
+
+    const txs = data as HeliusTxRecord[];
+    let hitBoundary = false;
+
+    for (const tx of txs) {
+      if (tx.timestamp < since24h) { hitBoundary = true; break; }
+      for (const t of tx.tokenTransfers ?? []) {
+        if (t.mint !== mint) continue;
+        const amount = Number(t.tokenAmount) || 0;
+        if (amount < 1000) continue; // skip dust
+        const direction: WhaleTrade["direction"] =
+          !t.fromUserAccount ? "buy" :
+          !t.toUserAccount   ? "sell" : "transfer";
+        trades.push({
+          rank: 0,
+          signature: tx.signature,
+          timestamp: tx.timestamp,
+          type: tx.type ?? "UNKNOWN",
+          direction,
+          amount,
+          uiAmount: amount.toLocaleString("en-US", { maximumFractionDigits: 2 }),
+          fromWallet: t.fromUserAccount ?? "",
+          toWallet:   t.toUserAccount   ?? "",
+        });
+      }
+    }
+
+    if (hitBoundary) break;
+    beforeSig = txs[txs.length - 1].signature;
+  }
+
+  // Deduplicate by signature+direction, sort by amount desc, take top 10
+  const seen = new Set<string>();
+  const unique = trades.filter((t) => {
+    const key = `${t.signature}:${t.direction}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+  unique.sort((a, b) => b.amount - a.amount);
+  return unique.slice(0, 10).map((t, i) => ({ ...t, rank: i + 1 }));
+}
+
+async function buildWhalesSnapshot(): Promise<WhalesSnapshot> {
+  const connection = new Connection(SOLANA_RPC_URL, "confirmed");
+  const [atlasHolders, polisHolders, atlasTrades, polisTrades] = await Promise.all([
+    fetchTopHolders(ATLAS_MINT, connection),
+    fetchTopHolders(POLIS_MINT, connection),
+    fetchLargeTrades(ATLAS_MINT),
+    fetchLargeTrades(POLIS_MINT),
+  ]);
+  return { fetchedAt: new Date().toISOString(), atlasHolders, polisHolders, atlasTrades, polisTrades };
+}
+
+app.get("/api/whales", async (_request, reply) => {
+  const now = Date.now();
+  if (whalesCache && whalesCache.expiresAt > now) {
+    return whalesCache.data;
+  }
+  try {
+    const data = await buildWhalesSnapshot();
+    whalesCache = { data, expiresAt: Math.min(now + 60 * 60 * 1000, nextUtcMidnightMs()) };
+    return data;
+  } catch (err) {
+    return reply.code(502).send({ error: err instanceof Error ? err.message : "Failed to fetch whales data" });
+  }
+});
+
 const start = async () => {
   app.get("/api/solana/latest-blockhash", async (_request, reply) => {
     try {
