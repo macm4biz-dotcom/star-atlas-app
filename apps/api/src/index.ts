@@ -1299,6 +1299,7 @@ type MiningResourceData = {
   dailyMined?: string;
   estimatedPlayerReserves?: string;
   resourceMint?: string;
+  resourceMintSource?: "onchain" | "env" | "unresolved";
   playerWalletBalance?: number;
   developerWalletBalance?: number;
   reserveSignal?: "deficit-risk" | "balanced" | "surplus-risk";
@@ -1970,18 +1971,23 @@ async function fetchSageMiningMetricsFromRPC(): Promise<BridgeMiningMetrics> {
       }
     }
 
-    const resourceMintByName = new Map<string, string>();
+    const resourceMintByName = new Map<string, { mint: string; source: "onchain" | "env" }>();
     for (const resource of minedResources) {
       const resourceKey = normalizeResourceMintKey(resource.resource);
-      const mint =
-        onchainResourceMintMap.get(resourceKey) ||
-        bridgeResourceMintMap.get(resourceKey);
-      if (mint) {
-        resourceMintByName.set(resource.resource, mint);
+      const onchainMint = onchainResourceMintMap.get(resourceKey);
+      const envMint = bridgeResourceMintMap.get(resourceKey);
+
+      if (onchainMint) {
+        resourceMintByName.set(resource.resource, { mint: onchainMint, source: "onchain" });
+        continue;
+      }
+
+      if (envMint) {
+        resourceMintByName.set(resource.resource, { mint: envMint, source: "env" });
       }
     }
 
-    const trackedMints = new Set(resourceMintByName.values());
+    const trackedMints = new Set(Array.from(resourceMintByName.values()).map((entry) => entry.mint));
     const { playerWallets, developerWallets } = resolveBridgeResourceWalletGroups();
     let playerBalancesByMint = new Map<string, number>();
     let developerBalancesByMint = new Map<string, number>();
@@ -1994,15 +2000,19 @@ async function fetchSageMiningMetricsFromRPC(): Promise<BridgeMiningMetrics> {
     }
 
     for (const resource of minedResources) {
-      const mint = resourceMintByName.get(resource.resource);
-      if (!mint) {
+      const mintEntry = resourceMintByName.get(resource.resource);
+      if (!mintEntry) {
+        resource.resourceMintSource = "unresolved";
         continue;
       }
+
+      const mint = mintEntry.mint;
 
       const playerBalance = Number((playerBalancesByMint.get(mint) || 0).toFixed(6));
       const developerBalance = Number((developerBalancesByMint.get(mint) || 0).toFixed(6));
 
       resource.resourceMint = mint;
+      resource.resourceMintSource = mintEntry.source;
       resource.playerWalletBalance = playerBalance;
       resource.developerWalletBalance = developerBalance;
 
@@ -2110,6 +2120,7 @@ async function fetchRydnMiningMetrics(): Promise<BridgeMiningMetrics> {
         totalFleets: data.total,
         byFaction: data.byFaction,
         updatedAt: now.toISOString(),
+        resourceMintSource: "unresolved",
         reserveSignal: "balanced",
       }))
       .filter((resource) => resource.totalFleets > 0)
@@ -2126,6 +2137,7 @@ async function fetchRydnMiningMetrics(): Promise<BridgeMiningMetrics> {
           USTUR: unmappedFleetTotal - perFaction * 2,
         },
         updatedAt: now.toISOString(),
+        resourceMintSource: "unresolved",
         reserveSignal: "balanced",
       });
     }

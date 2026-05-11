@@ -255,6 +255,7 @@ type MiningResourceData = {
   totalMined?: string;
   dailyMined?: string;
   resourceMint?: string;
+  resourceMintSource?: "onchain" | "env" | "unresolved";
   playerWalletBalance?: number;
   developerWalletBalance?: number;
   estimatedPlayerReserves?: string;
@@ -558,6 +559,12 @@ function formatMintShort(mint?: string) {
   if (!mint) return "-";
   if (mint.length <= 12) return mint;
   return `${mint.slice(0, 6)}...${mint.slice(-6)}`;
+}
+
+function formatMintSourceLabel(source?: "onchain" | "env" | "unresolved") {
+  if (source === "onchain") return "on-chain";
+  if (source === "env") return "env";
+  return "missing";
 }
 
 function getErrorMessage(error: unknown) {
@@ -957,6 +964,68 @@ function App() {
     document.body.removeChild(link);
     URL.revokeObjectURL(objectUrl);
     setBridgeMessage(`Audit Trail экспортирован: ${filename}`);
+  };
+
+  const exportResourcesCsv = () => {
+    if (!miningMetrics?.resources?.length) {
+      setMiningError("Нет данных ресурсов для экспорта CSV.");
+      return;
+    }
+
+    const escapeCsv = (value: unknown) => {
+      const text = String(value ?? "");
+      const escaped = text.replace(/"/g, '""');
+      return `"${escaped}"`;
+    };
+
+    const header = [
+      "resource",
+      "mint",
+      "mintSource",
+      "totalFleets",
+      "totalMined",
+      "dailyMined",
+      "playerWalletBalance",
+      "developerWalletBalance",
+      "resourceHardness",
+      "averageSystemRichness",
+      "mud",
+      "oni",
+      "ustur",
+      "updatedAt",
+    ].join(",");
+
+    const rows = miningMetrics.resources.map((resource) =>
+      [
+        escapeCsv(resource.resource),
+        escapeCsv(resource.resourceMint || ""),
+        escapeCsv(resource.resourceMintSource || "unresolved"),
+        escapeCsv(resource.totalFleets),
+        escapeCsv(resource.totalMined || ""),
+        escapeCsv(resource.dailyMined || ""),
+        escapeCsv(resource.playerWalletBalance ?? ""),
+        escapeCsv(resource.developerWalletBalance ?? ""),
+        escapeCsv(resource.resourceHardness ?? ""),
+        escapeCsv(resource.averageSystemRichness ?? ""),
+        escapeCsv(resource.byFaction.MUD || 0),
+        escapeCsv(resource.byFaction.ONI || 0),
+        escapeCsv(resource.byFaction.USTUR || 0),
+        escapeCsv(resource.updatedAt || miningMetrics.updatedAt),
+      ].join(","),
+    );
+
+    const content = [header, ...rows].join("\n");
+    const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+    const filename = `resources-split-${timestamp}.csv`;
+    const blob = new Blob([content], { type: "text/csv;charset=utf-8" });
+    const objectUrl = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = objectUrl;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(objectUrl);
   };
 
   const visibleAssets = useMemo(() => {
@@ -4256,6 +4325,13 @@ function App() {
             >
               {miningLoading ? "Обновление..." : "Обновить Данные"}
             </button>
+            <button
+              type="button"
+              disabled={!miningMetrics?.resources?.length}
+              onClick={exportResourcesCsv}
+            >
+              Экспорт CSV
+            </button>
           </div>
 
           {miningError ? <p className="error">{miningError}</p> : null}
@@ -4343,19 +4419,25 @@ function App() {
                     </thead>
                     <tbody>
                       {miningMetrics.resources.map((resource, idx: number) => (
-                        <tr key={idx}>
+                        <tr
+                          key={idx}
+                          className={resource.resourceMint ? "" : "resource-row-no-mint"}
+                        >
                           <td className="resource-name">{resource.resource}</td>
                           <td>
                             {resource.resourceMint ? (
-                              <a
-                                href={`https://solscan.io/token/${resource.resourceMint}`}
-                                target="_blank"
-                                rel="noreferrer"
-                              >
-                                {formatMintShort(resource.resourceMint)}
-                              </a>
+                              <>
+                                <a
+                                  href={`https://solscan.io/token/${resource.resourceMint}`}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                >
+                                  {formatMintShort(resource.resourceMint)}
+                                </a>
+                                <div className="mint-source">{formatMintSourceLabel(resource.resourceMintSource)}</div>
+                              </>
                             ) : (
-                              "-"
+                              <span className="mint-source">missing</span>
                             )}
                           </td>
                           <td className="resource-total">
