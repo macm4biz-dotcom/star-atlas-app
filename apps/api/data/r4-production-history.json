@@ -1,0 +1,10 @@
+{
+  "source": "manual-seed",
+  "updatedAt": "2026-05-11T00:00:00.000Z",
+  "resources": {
+    "food": [],
+    "ammunition": [],
+    "toolkit": [],
+    "fuel": []
+  }
+}

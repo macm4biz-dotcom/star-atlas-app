@@ -296,6 +296,56 @@ type BridgeMiningMetrics = {
   };
 };
 
+type R4SignalLevel =
+  | "deficit-risk"
+  | "balanced"
+  | "surplus-risk"
+  | "consumption-spike"
+  | "consumption-drop";
+
+type R4ResourceMetrics = {
+  key: "food" | "ammunition" | "toolkit" | "fuel";
+  label: string;
+  mint?: string;
+  mintSource?: "r4-env" | "bridge-env" | "unresolved";
+  totalCreatedCraft: number;
+  totalCreatedStaking: number;
+  totalCreated: number;
+  totalCreatedUnattributed: number;
+  totalConsumed: number;
+  playerBalance: number;
+  developerBalance: number;
+  totalSupply: number;
+  dailyConsumption: number;
+  avgDailyConsumption7d: number;
+  avgDailyConsumption30d: number;
+  daysOfCover: number | null;
+  signal: R4SignalLevel;
+  signalReason: string;
+  priceUsd: number;
+  priceChange24hPct: number | null;
+  priceChange7dPct: number | null;
+  buyOrderVolume: number;
+  sellOrderVolume: number;
+};
+
+type BridgeR4Metrics = {
+  updatedAt: string;
+  source: "onchain+r4-history";
+  resources: R4ResourceMetrics[];
+  summary: {
+    totalCreated: number;
+    totalConsumed: number;
+    totalPlayerBalance: number;
+    deficitRiskCount: number;
+    balancedCount: number;
+    surplusRiskCount: number;
+    anomalyCount: number;
+    playerWalletsScanned: number;
+    developerWalletsScanned: number;
+  };
+};
+
 type BridgeCapabilities = {
   canApproveCritical: boolean;
   canRunOperations: boolean;
@@ -582,6 +632,23 @@ function formatReserveSignal(signal?: "deficit-risk" | "balanced" | "surplus-ris
   return "Баланс";
 }
 
+function formatR4Signal(signal?: R4SignalLevel) {
+  if (signal === "deficit-risk") return "Риск дефицита";
+  if (signal === "surplus-risk") return "Риск избытка";
+  if (signal === "consumption-spike") return "Всплеск расхода";
+  if (signal === "consumption-drop") return "Просадка расхода";
+  return "Баланс";
+}
+
+function formatPercentDelta(value?: number | null) {
+  if (value == null || !Number.isFinite(value)) {
+    return "-";
+  }
+
+  const sign = value > 0 ? "+" : "";
+  return `${sign}${value.toFixed(2)}%`;
+}
+
 function formatTokenAmount(value?: number) {
   if (value == null || !Number.isFinite(value)) return "-";
   return value.toLocaleString("ru-RU", { maximumFractionDigits: 2 });
@@ -639,6 +706,12 @@ function formatMintShort(mint?: string) {
 function formatMintSourceLabel(source?: "onchain" | "env" | "unresolved") {
   if (source === "onchain") return "on-chain";
   if (source === "env") return "env";
+  return "missing";
+}
+
+function formatR4MintSourceLabel(source?: "r4-env" | "bridge-env" | "unresolved") {
+  if (source === "r4-env") return "r4-env";
+  if (source === "bridge-env") return "bridge-env";
   return "missing";
 }
 
@@ -827,6 +900,9 @@ function App() {
   const [miningMetrics, setMiningMetrics] = useState<BridgeMiningMetrics | null>(null);
   const [miningLoading, setMiningLoading] = useState(false);
   const [miningError, setMiningError] = useState<string | null>(null);
+  const [r4Metrics, setR4Metrics] = useState<BridgeR4Metrics | null>(null);
+  const [r4Loading, setR4Loading] = useState(false);
+  const [r4Error, setR4Error] = useState<string | null>(null);
   const [craftCatalog, setCraftCatalog] = useState<BridgeCraftCatalogResponse | null>(null);
   const [craftCatalogLoading, setCraftCatalogLoading] = useState(false);
   const [craftCatalogError, setCraftCatalogError] = useState<string | null>(null);
@@ -2073,6 +2149,30 @@ function App() {
     }
   }, []);
 
+  const loadR4Metrics = useCallback(async (quiet = false) => {
+    if (!quiet) {
+      setR4Loading(true);
+      setR4Error(null);
+    }
+
+    try {
+      const payload = await apiRequest<BridgeR4Metrics>("/api/bridge/resources-r4");
+      setR4Metrics(payload);
+      if (!quiet) {
+        setR4Error(null);
+      }
+    } catch (requestError) {
+      if (!quiet) {
+        setR4Error("Не удалось загрузить метрики R4.");
+      }
+      console.error(requestError);
+    } finally {
+      if (!quiet) {
+        setR4Loading(false);
+      }
+    }
+  }, []);
+
   const loadCraftCatalog = useCallback(async (quiet = false) => {
     if (!quiet) {
       setCraftCatalogLoading(true);
@@ -2336,6 +2436,12 @@ function App() {
       void loadMiningMetrics();
     }
   }, [activeTab, loadMiningMetrics, miningMetrics, miningLoading]);
+
+  useEffect(() => {
+    if (activeTab === "resources" && !r4Metrics && !r4Loading) {
+      void loadR4Metrics();
+    }
+  }, [activeTab, loadR4Metrics, r4Metrics, r4Loading]);
 
   useEffect(() => {
     if (activeTab === "resources" && !craftCatalog && !craftCatalogLoading) {
@@ -4407,6 +4513,13 @@ function App() {
             >
               Экспорт CSV
             </button>
+            <button
+              type="button"
+              onClick={() => void loadR4Metrics()}
+              disabled={r4Loading}
+            >
+              {r4Loading ? "R4..." : "Обновить R4"}
+            </button>
           </div>
 
           {miningError ? <p className="error">{miningError}</p> : null}
@@ -4615,6 +4728,151 @@ function App() {
               Нажмите «Обновить Данные» для загрузки on-chain метрик добычи.
             </p>
           )}
+
+          <div className="r4-panel">
+            <h3>Ресурсы R4</h3>
+            <p className="subtitle">
+              Ключевые расходники: Еда, Патроны, Инструменты, Топливо.
+              Показываем выпуск (крафт/стейкинг), расход, остаток, сигналы и рынок.
+            </p>
+
+            {r4Error ? <p className="error">{r4Error}</p> : null}
+
+            {r4Metrics ? (
+              <>
+                <div className="r4-summary">
+                  <p>
+                    Создано всего: <strong>{renderMetricWithTooltip(
+                      formatCompactTokenAmount(r4Metrics.summary.totalCreated),
+                      formatTokenAmount(r4Metrics.summary.totalCreated),
+                    )}</strong>
+                    {" | "}
+                    Израсходовано: <strong>{renderMetricWithTooltip(
+                      formatCompactTokenAmount(r4Metrics.summary.totalConsumed),
+                      formatTokenAmount(r4Metrics.summary.totalConsumed),
+                    )}</strong>
+                    {" | "}
+                    Остаток у игроков: <strong>{renderMetricWithTooltip(
+                      formatCompactTokenAmount(r4Metrics.summary.totalPlayerBalance),
+                      formatTokenAmount(r4Metrics.summary.totalPlayerBalance),
+                    )}</strong>
+                  </p>
+                  <p>
+                    Дефицит: <strong>{r4Metrics.summary.deficitRiskCount}</strong>
+                    {" | "}
+                    Баланс: <strong>{r4Metrics.summary.balancedCount}</strong>
+                    {" | "}
+                    Избыток: <strong>{r4Metrics.summary.surplusRiskCount}</strong>
+                    {" | "}
+                    Аномалий: <strong>{r4Metrics.summary.anomalyCount}</strong>
+                  </p>
+                </div>
+
+                <div className="resources-table r4-table">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Ресурс</th>
+                        <th>Создано Крафт</th>
+                        <th>Создано Стейкинг</th>
+                        <th>Создано Всего</th>
+                        <th>Израсходовано</th>
+                        <th>Остаток Игроки</th>
+                        <th>Расход 24ч</th>
+                        <th>Средний 7д</th>
+                        <th>Покрытие (дни)</th>
+                        <th>Цена $</th>
+                        <th>24ч %</th>
+                        <th>7д %</th>
+                        <th>BUY объём</th>
+                        <th>SELL объём</th>
+                        <th>Сигнал</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {r4Metrics.resources.map((resource) => {
+                        const mintInfo = resource.mint
+                          ? `${formatR4MintSourceLabel(resource.mintSource)} · ${formatMintShort(resource.mint)}`
+                          : "missing";
+
+                        return (
+                          <tr key={resource.key} className={resource.mint ? "" : "resource-row-no-mint"}>
+                            <td className="resource-name">
+                              {resource.mint ? (
+                                <a
+                                  href={`https://solscan.io/token/${resource.mint}`}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                >
+                                  {resource.label}
+                                </a>
+                              ) : (
+                                resource.label
+                              )}
+                              <div className="mint-source">{mintInfo}</div>
+                            </td>
+                            <td className="metric-compact">{renderMetricWithTooltip(
+                              formatCompactTokenAmount(resource.totalCreatedCraft),
+                              formatTokenAmount(resource.totalCreatedCraft),
+                            )}</td>
+                            <td className="metric-compact">{renderMetricWithTooltip(
+                              formatCompactTokenAmount(resource.totalCreatedStaking),
+                              formatTokenAmount(resource.totalCreatedStaking),
+                            )}</td>
+                            <td className="metric-compact">{renderMetricWithTooltip(
+                              formatCompactTokenAmount(resource.totalCreated),
+                              formatTokenAmount(resource.totalCreated),
+                            )}</td>
+                            <td className="metric-compact">{renderMetricWithTooltip(
+                              formatCompactTokenAmount(resource.totalConsumed),
+                              formatTokenAmount(resource.totalConsumed),
+                            )}</td>
+                            <td className="metric-compact">{renderMetricWithTooltip(
+                              formatCompactTokenAmount(resource.playerBalance),
+                              formatTokenAmount(resource.playerBalance),
+                            )}</td>
+                            <td className="metric-compact">{renderMetricWithTooltip(
+                              formatCompactTokenAmount(resource.dailyConsumption),
+                              formatTokenAmount(resource.dailyConsumption),
+                            )}</td>
+                            <td className="metric-compact">{renderMetricWithTooltip(
+                              formatCompactTokenAmount(resource.avgDailyConsumption7d),
+                              formatTokenAmount(resource.avgDailyConsumption7d),
+                            )}</td>
+                            <td>{resource.daysOfCover != null ? resource.daysOfCover.toLocaleString("ru-RU", { maximumFractionDigits: 1 }) : "-"}</td>
+                            <td>{resource.priceUsd > 0 ? resource.priceUsd.toLocaleString("ru-RU", { minimumFractionDigits: 6, maximumFractionDigits: 6 }) : "-"}</td>
+                            <td>{formatPercentDelta(resource.priceChange24hPct)}</td>
+                            <td>{formatPercentDelta(resource.priceChange7dPct)}</td>
+                            <td>{resource.buyOrderVolume.toLocaleString("ru-RU")}</td>
+                            <td>{resource.sellOrderVolume.toLocaleString("ru-RU")}</td>
+                            <td>
+                              <span
+                                className={`reserve-signal-badge ${resource.signal}`}
+                                title={resource.signalReason}
+                                tabIndex={0}
+                              >
+                                {formatR4Signal(resource.signal)}
+                              </span>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+
+                <p className="timestamp">
+                  Обновлено R4: {new Date(r4Metrics.updatedAt).toLocaleString("ru-RU")}
+                  {" | "}
+                  Игроков в скане: {r4Metrics.summary.playerWalletsScanned}
+                  {" | "}
+                  Dev-кошельков: {r4Metrics.summary.developerWalletsScanned}
+                </p>
+              </>
+            ) : (
+              <p className="placeholder">Нажмите «Обновить R4», чтобы загрузить аналитику расходников.</p>
+            )}
+          </div>
 
           <div className="craft-reference">
             <h3>Крафт: Материалы И Компоненты</h3>

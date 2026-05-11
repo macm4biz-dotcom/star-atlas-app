@@ -1335,6 +1335,82 @@ type BridgeMiningMetrics = {
   reserveSummary?: BridgeResourceReserveSummary;
 };
 
+type R4ResourceKey = "food" | "ammunition" | "toolkit" | "fuel";
+
+type R4DailyProductionEntry = {
+  utcDateKey: string;
+  crafted: number;
+  staked: number;
+};
+
+type R4ProductionHistoryFile = {
+  source: string;
+  updatedAt: string;
+  resources: Partial<Record<R4ResourceKey, R4DailyProductionEntry[]>>;
+};
+
+type R4BalanceSnapshot = {
+  utcDateKey: string;
+  playerBalance: number;
+  totalSupply: number;
+  priceUsd: number;
+};
+
+type R4BalanceHistory = {
+  resource: R4ResourceKey;
+  snapshots: R4BalanceSnapshot[];
+};
+
+type R4SignalLevel =
+  | "deficit-risk"
+  | "balanced"
+  | "surplus-risk"
+  | "consumption-spike"
+  | "consumption-drop";
+
+type R4ResourceMetrics = {
+  key: R4ResourceKey;
+  label: string;
+  mint?: string;
+  mintSource?: "r4-env" | "bridge-env" | "unresolved";
+  totalCreatedCraft: number;
+  totalCreatedStaking: number;
+  totalCreated: number;
+  totalCreatedUnattributed: number;
+  totalConsumed: number;
+  playerBalance: number;
+  developerBalance: number;
+  totalSupply: number;
+  dailyConsumption: number;
+  avgDailyConsumption7d: number;
+  avgDailyConsumption30d: number;
+  daysOfCover: number | null;
+  signal: R4SignalLevel;
+  signalReason: string;
+  priceUsd: number;
+  priceChange24hPct: number | null;
+  priceChange7dPct: number | null;
+  buyOrderVolume: number;
+  sellOrderVolume: number;
+};
+
+type BridgeR4Metrics = {
+  updatedAt: string;
+  source: "onchain+r4-history";
+  resources: R4ResourceMetrics[];
+  summary: {
+    totalCreated: number;
+    totalConsumed: number;
+    totalPlayerBalance: number;
+    deficitRiskCount: number;
+    balancedCount: number;
+    surplusRiskCount: number;
+    anomalyCount: number;
+    playerWalletsScanned: number;
+    developerWalletsScanned: number;
+  };
+};
+
 type BridgeCraftCatalogGroup = "compound-material" | "component";
 
 type BridgeCraftCatalogItem = {
@@ -1433,6 +1509,242 @@ function getUtcDayEndTtlMs(date: Date) {
   // Keep baseline available through the next UTC day to survive delayed requests and restarts.
   const nextReset = getNextUtcReset(date);
   return Math.max(1, nextReset.getTime() - date.getTime() + 24 * 60 * 60 * 1000);
+}
+
+const R4_BALANCE_HISTORY_SCOPE = "r4_balance_history";
+const R4_BALANCE_HISTORY_MAX_DAYS = 90;
+
+const R4_RESOURCE_DEFINITIONS: Array<{
+  key: R4ResourceKey;
+  label: string;
+  aliases: string[];
+}> = [
+  {
+    key: "food",
+    label: "Еда",
+    aliases: ["food", "еда", "ration"],
+  },
+  {
+    key: "ammunition",
+    label: "Патроны",
+    aliases: ["ammunition", "ammo", "патрон"],
+  },
+  {
+    key: "toolkit",
+    label: "Инструменты",
+    aliases: ["toolkit", "tool", "инстру"],
+  },
+  {
+    key: "fuel",
+    label: "Топливо",
+    aliases: ["fuel", "топлив"],
+  },
+];
+
+function normalizeR4ProductionEntries(entries: unknown): R4DailyProductionEntry[] {
+  if (!Array.isArray(entries)) {
+    return [];
+  }
+
+  const normalized = entries
+    .map((entry) => {
+      const record = asRecord(entry);
+      const utcDateKey = typeof record?.utcDateKey === "string" ? record.utcDateKey.slice(0, 10) : "";
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(utcDateKey)) {
+        return null;
+      }
+
+      const crafted = Math.max(0, Number(record?.crafted || 0));
+      const staked = Math.max(0, Number(record?.staked || 0));
+
+      return {
+        utcDateKey,
+        crafted: Number.isFinite(crafted) ? Number(crafted.toFixed(6)) : 0,
+        staked: Number.isFinite(staked) ? Number(staked.toFixed(6)) : 0,
+      } satisfies R4DailyProductionEntry;
+    })
+    .filter((entry): entry is R4DailyProductionEntry => !!entry)
+    .sort((left, right) => left.utcDateKey.localeCompare(right.utcDateKey));
+
+  const dedup = new Map<string, R4DailyProductionEntry>();
+  for (const entry of normalized) {
+    dedup.set(entry.utcDateKey, entry);
+  }
+
+  return Array.from(dedup.values()).sort((left, right) => left.utcDateKey.localeCompare(right.utcDateKey));
+}
+
+async function readR4ProductionHistory(): Promise<R4ProductionHistoryFile> {
+  const fallbackResources = R4_RESOURCE_DEFINITIONS.reduce((acc, definition) => {
+    acc[definition.key] = [];
+    return acc;
+  }, {} as Partial<Record<R4ResourceKey, R4DailyProductionEntry[]>>);
+
+  try {
+    const raw = await readFile(R4_PRODUCTION_HISTORY_FILE, "utf-8");
+    const parsed = JSON.parse(raw) as {
+      source?: unknown;
+      updatedAt?: unknown;
+      resources?: unknown;
+    };
+
+    const resourcesRecord = asRecord(parsed.resources) || {};
+    const normalizedResources = R4_RESOURCE_DEFINITIONS.reduce((acc, definition) => {
+      acc[definition.key] = normalizeR4ProductionEntries(resourcesRecord[definition.key]);
+      return acc;
+    }, {} as Partial<Record<R4ResourceKey, R4DailyProductionEntry[]>>);
+
+    return {
+      source:
+        typeof parsed.source === "string" && parsed.source.trim()
+          ? parsed.source.trim()
+          : "manual-seed",
+      updatedAt:
+        typeof parsed.updatedAt === "string" && parsed.updatedAt.trim()
+          ? parsed.updatedAt.trim()
+          : new Date().toISOString(),
+      resources: normalizedResources,
+    };
+  } catch {
+    return {
+      source: "manual-seed",
+      updatedAt: new Date().toISOString(),
+      resources: fallbackResources,
+    };
+  }
+}
+
+async function readR4BalanceHistory(resource: R4ResourceKey): Promise<R4BalanceHistory | null> {
+  if (!SHARED_CACHE_ENABLED) {
+    return null;
+  }
+
+  const cached = await readSharedCacheString<R4BalanceHistory>(
+    R4_BALANCE_HISTORY_SCOPE,
+    normalizeResourceMintKey(resource),
+  );
+
+  if (!cached || cached.resource !== resource || !Array.isArray(cached.snapshots)) {
+    return null;
+  }
+
+  return {
+    resource,
+    snapshots: cached.snapshots
+      .map((entry) => ({
+        utcDateKey: String(entry.utcDateKey || "").slice(0, 10),
+        playerBalance: Number(entry.playerBalance || 0),
+        totalSupply: Number(entry.totalSupply || 0),
+        priceUsd: Number(entry.priceUsd || 0),
+      }))
+      .filter((entry) => /^\d{4}-\d{2}-\d{2}$/.test(entry.utcDateKey)),
+  };
+}
+
+async function writeR4BalanceHistory(history: R4BalanceHistory) {
+  if (!SHARED_CACHE_ENABLED) {
+    return;
+  }
+
+  const ttlMs = R4_BALANCE_HISTORY_MAX_DAYS * 24 * 60 * 60 * 1000;
+  await writeSharedCacheString(
+    R4_BALANCE_HISTORY_SCOPE,
+    normalizeResourceMintKey(history.resource),
+    history,
+    ttlMs,
+  );
+}
+
+async function appendR4BalanceSnapshot(
+  resource: R4ResourceKey,
+  snapshot: R4BalanceSnapshot,
+) {
+  const existing = (await readR4BalanceHistory(resource)) || {
+    resource,
+    snapshots: [],
+  };
+
+  const filtered = existing.snapshots.filter((entry) => entry.utcDateKey !== snapshot.utcDateKey);
+  filtered.push(snapshot);
+  filtered.sort((left, right) => left.utcDateKey.localeCompare(right.utcDateKey));
+
+  const trimmed = filtered.slice(-R4_BALANCE_HISTORY_MAX_DAYS);
+  const nextHistory: R4BalanceHistory = {
+    resource,
+    snapshots: trimmed,
+  };
+
+  await writeR4BalanceHistory(nextHistory);
+  return nextHistory;
+}
+
+function calculateR4OrderVolumes(aliases: string[]) {
+  const normalizedAliases = aliases.map((alias) => alias.toLowerCase());
+
+  const sellOrderVolume = marketListings
+    .filter((listing) => listing.status === "active" && listing.itemClass === "Resource")
+    .filter((listing) => {
+      const search = `${listing.itemName} ${listing.note || ""}`.toLowerCase();
+      return normalizedAliases.some((alias) => search.includes(alias));
+    })
+    .reduce((sum, listing) => sum + Math.max(0, Number(listing.quantity || 0)), 0);
+
+  const buyOrderVolume = barterOffers
+    .filter((offer) => offer.status === "open")
+    .filter((offer) => {
+      const search = `${offer.wantItem} ${offer.note || ""}`.toLowerCase();
+      return normalizedAliases.some((alias) => search.includes(alias));
+    })
+    .length;
+
+  return {
+    buyOrderVolume,
+    sellOrderVolume,
+  };
+}
+
+function calculateR4Signal(params: {
+  dailyConsumption: number;
+  avgDailyConsumption7d: number;
+  avgDailyConsumption30d: number;
+  daysOfCover: number | null;
+}): { signal: R4SignalLevel; reason: string } {
+  const dailyConsumption = Math.max(0, params.dailyConsumption);
+  const avg7 = Math.max(0, params.avgDailyConsumption7d);
+  const avg30 = Math.max(0, params.avgDailyConsumption30d);
+
+  if (avg30 > 0 && dailyConsumption > avg30 * 1.8) {
+    return {
+      signal: "consumption-spike",
+      reason: `Всплеск расхода: ${dailyConsumption.toFixed(0)} vs avg30 ${avg30.toFixed(0)}`,
+    };
+  }
+
+  if (avg30 > 0 && dailyConsumption < avg30 * 0.4) {
+    return {
+      signal: "consumption-drop",
+      reason: `Просадка расхода: ${dailyConsumption.toFixed(0)} vs avg30 ${avg30.toFixed(0)}`,
+    };
+  }
+
+  if (params.daysOfCover != null && params.daysOfCover < 14) {
+    return {
+      signal: "deficit-risk",
+      reason: `Низкое покрытие: ~${Math.ceil(params.daysOfCover)} дней`,
+    };
+  }
+
+  if (params.daysOfCover != null && params.daysOfCover > 120 && avg7 > 0) {
+    return {
+      signal: "surplus-risk",
+      reason: `Высокое покрытие: ~${Math.ceil(params.daysOfCover)} дней`,
+    };
+  }
+
+  return {
+    signal: "balanced",
+    reason: `Стабильный расход: avg7 ${avg7.toFixed(0)} / avg30 ${avg30.toFixed(0)}`,
+  };
 }
 
 /**
@@ -2384,6 +2696,239 @@ async function fetchSageMiningMetricsFromRPC(): Promise<BridgeMiningMetrics> {
     );
     return fetchRydnMiningMetrics();
   }
+}
+
+function averageNumbers(values: number[]) {
+  if (!values.length) {
+    return 0;
+  }
+
+  return values.reduce((sum, value) => sum + value, 0) / values.length;
+}
+
+async function fetchBridgeR4Metrics(): Promise<BridgeR4Metrics> {
+  const now = new Date();
+  const utcDateKey = formatUtcDateKey(now);
+  const connection = new Connection(SOLANA_RPC_URL, "confirmed");
+
+  const r4MintMap = parseBridgeResourceMintMap(process.env.BRIDGE_R4_RESOURCE_MINTS);
+  const bridgeMintMap = parseBridgeResourceMintMap(process.env.BRIDGE_RESOURCE_MINTS);
+
+  const r4Resources = R4_RESOURCE_DEFINITIONS.map((definition) => {
+    const keyCandidates = [definition.key, definition.label].map((value) =>
+      normalizeResourceMintKey(value),
+    );
+
+    let mint: string | undefined;
+    let mintSource: "r4-env" | "bridge-env" | "unresolved" = "unresolved";
+
+    for (const keyCandidate of keyCandidates) {
+      const fromR4 = r4MintMap.get(keyCandidate);
+      if (fromR4) {
+        mint = fromR4;
+        mintSource = "r4-env";
+        break;
+      }
+
+      const fromBridge = bridgeMintMap.get(keyCandidate);
+      if (fromBridge) {
+        mint = fromBridge;
+        mintSource = "bridge-env";
+      }
+    }
+
+    return {
+      ...definition,
+      mint,
+      mintSource,
+    };
+  });
+
+  const trackedMints = new Set(
+    r4Resources
+      .map((resource) => resource.mint)
+      .filter((mint): mint is string => !!mint),
+  );
+
+  const { playerWallets, developerWallets } = resolveBridgeResourceWalletGroups();
+
+  let playerBalancesByMint = new Map<string, number>();
+  let developerBalancesByMint = new Map<string, number>();
+  let supplyByMint = new Map<string, number>();
+
+  if (trackedMints.size > 0) {
+    if (playerWallets.length > 0) {
+      [playerBalancesByMint, developerBalancesByMint, supplyByMint] = await Promise.all([
+        readTokenBalancesByWalletsAndMints(connection, playerWallets, trackedMints),
+        readTokenBalancesByWalletsAndMints(connection, developerWallets, trackedMints),
+        readTokenSupplyByMints(connection, trackedMints),
+      ]);
+    } else {
+      [developerBalancesByMint, supplyByMint] = await Promise.all([
+        readTokenBalancesByWalletsAndMints(connection, developerWallets, trackedMints),
+        readTokenSupplyByMints(connection, trackedMints),
+      ]);
+    }
+  }
+
+  const pricesByMint = await fetchPricesUsdByMintViaJupiter(Array.from(trackedMints));
+  const productionHistory = await readR4ProductionHistory();
+
+  let totalCreated = 0;
+  let totalConsumed = 0;
+  let totalPlayerBalance = 0;
+  let deficitRiskCount = 0;
+  let balancedCount = 0;
+  let surplusRiskCount = 0;
+  let anomalyCount = 0;
+
+  const resources: R4ResourceMetrics[] = [];
+
+  for (const resource of r4Resources) {
+    const mint = resource.mint;
+    const developerBalance = mint
+      ? Number((developerBalancesByMint.get(mint) || 0).toFixed(6))
+      : 0;
+    const totalSupply = mint
+      ? Number((supplyByMint.get(mint) || 0).toFixed(6))
+      : 0;
+    const playerBalanceRaw = mint
+      ? playerWallets.length > 0
+        ? (playerBalancesByMint.get(mint) || 0)
+        : Math.max(0, totalSupply - developerBalance)
+      : 0;
+    const playerBalance = Number(playerBalanceRaw.toFixed(6));
+
+    const productionEntries = productionHistory.resources[resource.key] || [];
+    const totalCreatedCraft = Number(
+      productionEntries.reduce((sum, entry) => sum + Math.max(0, Number(entry.crafted || 0)), 0).toFixed(6),
+    );
+    const totalCreatedStaking = Number(
+      productionEntries.reduce((sum, entry) => sum + Math.max(0, Number(entry.staked || 0)), 0).toFixed(6),
+    );
+    const createdKnown = totalCreatedCraft + totalCreatedStaking;
+    const createdOverall = Math.max(createdKnown, totalSupply);
+    const totalCreatedUnattributed = Number(Math.max(0, createdOverall - createdKnown).toFixed(6));
+    const consumedOverall = Number(Math.max(0, createdOverall - totalSupply).toFixed(6));
+
+    const createdByDate = new Map<string, number>();
+    for (const entry of productionEntries) {
+      createdByDate.set(
+        entry.utcDateKey,
+        Number((Math.max(0, Number(entry.crafted || 0)) + Math.max(0, Number(entry.staked || 0))).toFixed(6)),
+      );
+    }
+
+    const priceUsd = mint ? Number((pricesByMint[mint] || 0).toFixed(8)) : 0;
+    const balanceHistory = await appendR4BalanceSnapshot(resource.key, {
+      utcDateKey,
+      playerBalance,
+      totalSupply,
+      priceUsd,
+    });
+
+    const dailyConsumptions: number[] = [];
+    for (let index = 1; index < balanceHistory.snapshots.length; index += 1) {
+      const previous = balanceHistory.snapshots[index - 1];
+      const current = balanceHistory.snapshots[index];
+      const createdForDay = createdByDate.get(current.utcDateKey) || 0;
+      const consumedForDay = Math.max(
+        0,
+        previous.totalSupply + createdForDay - current.totalSupply,
+      );
+      dailyConsumptions.push(Number(consumedForDay.toFixed(6)));
+    }
+
+    const dailyConsumption = Number((dailyConsumptions[dailyConsumptions.length - 1] || 0).toFixed(6));
+    const avgDailyConsumption7d = Number(
+      averageNumbers(dailyConsumptions.slice(-7)).toFixed(6),
+    );
+    const avgDailyConsumption30d = Number(
+      averageNumbers(dailyConsumptions.slice(-30)).toFixed(6),
+    );
+    const daysOfCover =
+      avgDailyConsumption7d > 0
+        ? Number((playerBalance / avgDailyConsumption7d).toFixed(2))
+        : null;
+
+    const previousSnapshot =
+      balanceHistory.snapshots.length > 1
+        ? balanceHistory.snapshots[balanceHistory.snapshots.length - 2]
+        : null;
+    const weekSnapshot =
+      balanceHistory.snapshots.length > 7
+        ? balanceHistory.snapshots[balanceHistory.snapshots.length - 8]
+        : null;
+
+    const priceChange24hPct =
+      previousSnapshot && previousSnapshot.priceUsd > 0
+        ? Number((((priceUsd - previousSnapshot.priceUsd) / previousSnapshot.priceUsd) * 100).toFixed(2))
+        : null;
+    const priceChange7dPct =
+      weekSnapshot && weekSnapshot.priceUsd > 0
+        ? Number((((priceUsd - weekSnapshot.priceUsd) / weekSnapshot.priceUsd) * 100).toFixed(2))
+        : null;
+
+    const { buyOrderVolume, sellOrderVolume } = calculateR4OrderVolumes(resource.aliases);
+    const { signal, reason } = calculateR4Signal({
+      dailyConsumption,
+      avgDailyConsumption7d,
+      avgDailyConsumption30d,
+      daysOfCover,
+    });
+
+    if (signal === "deficit-risk") deficitRiskCount += 1;
+    else if (signal === "surplus-risk") surplusRiskCount += 1;
+    else if (signal === "consumption-spike" || signal === "consumption-drop") anomalyCount += 1;
+    else balancedCount += 1;
+
+    totalCreated += createdOverall;
+    totalConsumed += consumedOverall;
+    totalPlayerBalance += playerBalance;
+
+    resources.push({
+      key: resource.key,
+      label: resource.label,
+      mint,
+      mintSource: resource.mint ? resource.mintSource : "unresolved",
+      totalCreatedCraft,
+      totalCreatedStaking,
+      totalCreated: Number(createdOverall.toFixed(6)),
+      totalCreatedUnattributed,
+      totalConsumed: consumedOverall,
+      playerBalance,
+      developerBalance,
+      totalSupply,
+      dailyConsumption,
+      avgDailyConsumption7d,
+      avgDailyConsumption30d,
+      daysOfCover,
+      signal,
+      signalReason: reason,
+      priceUsd,
+      priceChange24hPct,
+      priceChange7dPct,
+      buyOrderVolume,
+      sellOrderVolume,
+    });
+  }
+
+  return {
+    updatedAt: now.toISOString(),
+    source: "onchain+r4-history",
+    resources,
+    summary: {
+      totalCreated: Number(totalCreated.toFixed(6)),
+      totalConsumed: Number(totalConsumed.toFixed(6)),
+      totalPlayerBalance: Number(totalPlayerBalance.toFixed(6)),
+      deficitRiskCount,
+      balancedCount,
+      surplusRiskCount,
+      anomalyCount,
+      playerWalletsScanned: playerWallets.length,
+      developerWalletsScanned: developerWallets.length,
+    },
+  };
 }
 
 async function fetchRydnMiningMetrics(): Promise<BridgeMiningMetrics> {
@@ -3531,6 +4076,7 @@ const BRIDGE_AUDIT_FILE = resolve(API_ROOT_DIR, "data", "bridge-audit-log.json")
 const BRIDGE_ACCESS_FILE = resolve(API_ROOT_DIR, "data", "bridge-access.json");
 const WALLET_AUTH_USERS_FILE = resolve(API_ROOT_DIR, "data", "wallet-auth-users.json");
 const CRAFT_CATALOG_FILE = resolve(API_ROOT_DIR, "data", "craft-catalog.json");
+const R4_PRODUCTION_HISTORY_FILE = resolve(API_ROOT_DIR, "data", "r4-production-history.json");
 const DEFAULT_WALLET_AUTH_ADMIN_WALLETS = [
   "YQmg9nTsvVLUgtj35pY8WUPRVGHaz7KfmaCgPuS6bwY",
 ];
@@ -5705,6 +6251,12 @@ app.get<{
   reply.header("cache-control", "max-age=60");
   reply.header("x-mining-sync", "live");
   return miningMetrics;
+});
+
+app.get("/api/bridge/resources-r4", async (request, reply) => {
+  const metrics = await fetchBridgeR4Metrics();
+  reply.header("cache-control", "max-age=60");
+  return metrics;
 });
 
 app.get("/api/bridge/craft-catalog", async (request, reply) => {

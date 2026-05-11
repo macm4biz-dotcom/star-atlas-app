@@ -1794,6 +1794,42 @@ th {
   margin-top: 6px;
 }
 
+.r4-panel {
+  margin-top: 18px;
+  padding: 12px;
+  border: 1px solid rgba(156, 200, 255, 0.24);
+  border-radius: 12px;
+  background: rgba(92, 137, 255, 0.07);
+}
+
+.r4-panel h3 {
+  margin: 0 0 8px;
+  color: #d9ecff;
+}
+
+.r4-summary {
+  margin: 8px 0 14px;
+  padding: 10px 12px;
+  border: 1px solid rgba(120, 220, 255, 0.22);
+  border-radius: 10px;
+  background: rgba(116, 217, 255, 0.08);
+}
+
+.r4-summary p {
+  margin: 0;
+  color: #d6ecff;
+  font-size: 13px;
+}
+
+.r4-summary p + p {
+  margin-top: 6px;
+}
+
+.r4-table th,
+.r4-table td {
+  white-space: nowrap;
+}
+
 .resource-supply-badges {
   margin-top: 10px;
   display: flex;
@@ -1829,6 +1865,18 @@ th {
   color: #9ce8ff;
   background: rgba(76, 183, 255, 0.14);
   border-color: rgba(76, 183, 255, 0.35);
+}
+
+.reserve-signal-badge.consumption-spike {
+  color: #ffd4b0;
+  background: rgba(255, 141, 69, 0.16);
+  border-color: rgba(255, 141, 69, 0.38);
+}
+
+.reserve-signal-badge.consumption-drop {
+  color: #cbbcff;
+  background: rgba(173, 123, 255, 0.16);
+  border-color: rgba(173, 123, 255, 0.38);
 }
 
 .craft-reference {
