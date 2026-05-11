@@ -2710,7 +2710,7 @@ async function fetchBridgeR4Metrics(): Promise<BridgeR4Metrics> {
   const bridgeMintMap = parseBridgeResourceMintMap(process.env.BRIDGE_RESOURCE_MINTS);
 
   const r4Resources = R4_RESOURCE_DEFINITIONS.map((definition) => {
-    const keyCandidates = [definition.key, definition.label].map((value) =>
+    const keyCandidates = [definition.key, definition.label, ...definition.aliases].map((value) =>
       normalizeResourceMintKey(value),
     );
 
