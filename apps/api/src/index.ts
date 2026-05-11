@@ -2781,6 +2781,7 @@ async function fetchBridgeR4Metrics(): Promise<BridgeR4Metrics> {
 
   for (const resource of r4Resources) {
     const mint = resource.mint;
+    const hasOnchainMintData = Boolean(mint && supplyByMint.has(mint));
     const developerBalance = mint
       ? Number((developerBalancesByMint.get(mint) || 0).toFixed(6))
       : 0;
@@ -2798,8 +2799,12 @@ async function fetchBridgeR4Metrics(): Promise<BridgeR4Metrics> {
     const totalCreatedKnown = Number(
       productionEntries.reduce((sum, entry) => sum + Math.max(0, Number(entry.created || 0)), 0).toFixed(6),
     );
-    const totalCreatedFinal = Math.max(totalCreatedKnown, totalSupply);
-    const consumedOverall = Number(Math.max(0, totalCreatedFinal - totalSupply).toFixed(6));
+    const totalCreatedFinal = hasOnchainMintData
+      ? Math.max(totalCreatedKnown, totalSupply)
+      : totalCreatedKnown;
+    const consumedOverall = hasOnchainMintData
+      ? Number(Math.max(0, totalCreatedFinal - totalSupply).toFixed(6))
+      : 0;
 
     // Получить создано за сегодня
     const createdByDate = new Map<string, number>();
@@ -2809,12 +2814,17 @@ async function fetchBridgeR4Metrics(): Promise<BridgeR4Metrics> {
     const createdToday = Number((createdByDate.get(utcDateKey) || 0).toFixed(6));
 
     const priceUsd = mint ? Number((pricesByMint[mint] || 0).toFixed(8)) : 0;
-    const balanceHistory = await appendR4BalanceSnapshot(resource.key, {
-      utcDateKey,
-      playerBalance,
-      totalSupply,
-      priceUsd,
-    });
+    const balanceHistory = hasOnchainMintData
+      ? await appendR4BalanceSnapshot(resource.key, {
+          utcDateKey,
+          playerBalance,
+          totalSupply,
+          priceUsd,
+        })
+      : {
+          resource: resource.key,
+          snapshots: [],
+        };
 
     const dailyConsumptions: number[] = [];
     for (let index = 1; index < balanceHistory.snapshots.length; index += 1) {
