@@ -330,6 +330,13 @@ type R4ResourceMetrics = {
 type BridgeR4Metrics = {
   updatedAt: string;
   source: "onchain+r4-history";
+  programIds: {
+    sage: string;
+    cargo: string;
+    crafting: string;
+    playerProfile: string;
+    sourceUrl: string;
+  };
   resources: R4ResourceMetrics[];
   summary: {
     totalCreated: number;
@@ -4764,6 +4771,19 @@ function App() {
                     Избыток: <strong>{r4Metrics.summary.surplusRiskCount}</strong>
                     {" | "}
                     Аномалий: <strong>{r4Metrics.summary.anomalyCount}</strong>
+                  </p>
+                  <p>
+                    Program IDs (Mainnet):
+                    {" "}
+                    <a href={`https://solscan.io/account/${r4Metrics.programIds.sage}`} target="_blank" rel="noreferrer">SAGE</a>
+                    {" | "}
+                    <a href={`https://solscan.io/account/${r4Metrics.programIds.cargo}`} target="_blank" rel="noreferrer">Cargo</a>
+                    {" | "}
+                    <a href={`https://solscan.io/account/${r4Metrics.programIds.crafting}`} target="_blank" rel="noreferrer">Crafting</a>
+                    {" | "}
+                    <a href={`https://solscan.io/account/${r4Metrics.programIds.playerProfile}`} target="_blank" rel="noreferrer">Player Profile</a>
+                    {" | "}
+                    <a href={r4Metrics.programIds.sourceUrl} target="_blank" rel="noreferrer">Build Docs</a>
                   </p>
                 </div>
 

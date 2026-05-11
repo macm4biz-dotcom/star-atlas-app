@@ -1394,6 +1394,13 @@ type R4ResourceMetrics = {
 type BridgeR4Metrics = {
   updatedAt: string;
   source: "onchain+r4-history";
+  programIds: {
+    sage: string;
+    cargo: string;
+    crafting: string;
+    playerProfile: string;
+    sourceUrl: string;
+  };
   resources: R4ResourceMetrics[];
   summary: {
     totalCreated: number;
@@ -1537,6 +1544,14 @@ const R4_RESOURCE_DEFINITIONS: Array<{
     aliases: ["fuel", "топлив"],
   },
 ];
+
+const STAR_ATLAS_MAINNET_PROGRAM_IDS = {
+  sage: "SAGE2HAwep459SNq61LHvjxPk4pLPEJLoMETef7f7EE",
+  cargo: "Cargo2VNTPPTi9c1vq1Jw5d3BWUNr18MjRtSupAghKEk",
+  crafting: "CRAFT2RPXPJWCEix4WpJST3E7NLf79GTqZUL75wngXo5",
+  playerProfile: "pprofELXjL5Kck7Jn5hCpwAL82DpTkSYBENzahVtbc9",
+  sourceUrl: "https://build.staratlas.com/dev-resources/mainnet-program-ids",
+} as const;
 
 function normalizeR4ProductionEntries(entries: unknown): R4DailyProductionEntry[] {
   if (!Array.isArray(entries)) {
@@ -2913,6 +2928,7 @@ async function fetchBridgeR4Metrics(): Promise<BridgeR4Metrics> {
   return {
     updatedAt: now.toISOString(),
     source: "onchain+r4-history",
+    programIds: STAR_ATLAS_MAINNET_PROGRAM_IDS,
     resources,
     summary: {
       totalCreated: Number(totalCreated.toFixed(6)),
