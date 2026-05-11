@@ -339,6 +339,108 @@ def load_json(path: Path) -> Dict[str, Any]:
         raise RuntimeError(f"Failed to load config {path}: {exc}") from exc
 
 
+def build_idl_index(reference: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+    index: Dict[str, Dict[str, Any]] = {}
+    for section in ("cargoAccounts", "sageAccounts"):
+        items = reference.get(section, [])
+        if not isinstance(items, list):
+            continue
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            account_name = item.get("accountName")
+            if not isinstance(account_name, str) or not account_name:
+                continue
+            index[f"{section}:{account_name}"] = item
+    return index
+
+
+def resolve_idl_entry(
+    target: Dict[str, Any],
+    idl_index: Dict[str, Dict[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    account = target.get("idl_account")
+    if not isinstance(account, str) or not account:
+        return None
+
+    section = target.get("idl_section")
+    if isinstance(section, str) and section:
+        return idl_index.get(f"{section}:{account}")
+
+    matches = [
+        value
+        for key, value in idl_index.items()
+        if key.endswith(f":{account}")
+    ]
+    if len(matches) == 1:
+        return matches[0]
+    if len(matches) > 1:
+        raise ValueError(
+            f"Target {target.get('name','unnamed')}: idl_account '{account}' is ambiguous. Set idl_section."
+        )
+    raise ValueError(
+        f"Target {target.get('name','unnamed')}: idl_account '{account}' not found in reference"
+    )
+
+
+def apply_idl_reference_to_target(
+    target: Dict[str, Any],
+    idl_index: Dict[str, Dict[str, Any]],
+) -> Dict[str, Any]:
+    resolved = dict(target)
+    entry = resolve_idl_entry(resolved, idl_index)
+    if not entry:
+        return resolved
+
+    min_data_size = entry.get("minDataSize")
+    if resolved.get("data_size") is None and isinstance(min_data_size, int) and min_data_size > 0:
+        resolved["data_size"] = min_data_size
+
+    memcmp_filters = resolved.get("memcmp")
+    if memcmp_filters is None:
+        memcmp_filters = []
+    if not isinstance(memcmp_filters, list):
+        raise ValueError(f"Target {resolved.get('name','unnamed')}: memcmp must be an array")
+
+    has_disc_memcmp = any(
+        isinstance(item, dict) and item.get("offset") == 0 and isinstance(item.get("bytes"), str)
+        for item in memcmp_filters
+    )
+    discriminator_b58 = entry.get("discriminatorBase58")
+    if not has_disc_memcmp and isinstance(discriminator_b58, str) and discriminator_b58:
+        memcmp_filters.insert(0, {"offset": 0, "bytes": discriminator_b58})
+    resolved["memcmp"] = memcmp_filters
+
+    decoder = resolved.get("decoder")
+    if isinstance(decoder, dict):
+        if decoder.get("discriminator_hex") is None:
+            discriminator_hex = entry.get("discriminatorHex")
+            if isinstance(discriminator_hex, str) and discriminator_hex:
+                decoder = dict(decoder)
+                decoder["discriminator_hex"] = discriminator_hex
+                resolved["decoder"] = decoder
+
+    return resolved
+
+
+def resolve_targets_with_idl(
+    config: Dict[str, Any],
+    reference: Optional[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    targets = config.get("targets")
+    if not isinstance(targets, list) or not targets:
+        raise ValueError("config.targets must be a non-empty array")
+
+    if reference is None:
+        return targets
+
+    idl_index = build_idl_index(reference)
+    return [
+        apply_idl_reference_to_target(target, idl_index) if isinstance(target, dict) else target
+        for target in targets
+    ]
+
+
 def parse_args(argv: Optional[Iterable[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Aggregate Star Atlas resources from PDA accounts via Solana RPC"
@@ -379,6 +481,18 @@ def parse_args(argv: Optional[Iterable[str]] = None) -> argparse.Namespace:
         help="Path to JSON config with program targets and account schema offsets",
     )
     parser.add_argument(
+        "--idl-reference",
+        type=Path,
+        default=Path("scripts/star_atlas_idl_reference.generated.json"),
+        help="Optional generated IDL reference JSON used to auto-fill discriminator/data_size",
+    )
+    parser.add_argument(
+        "--dump-resolved-config",
+        type=Path,
+        default=None,
+        help="Optional path to write effective resolved targets config",
+    )
+    parser.add_argument(
         "--out-json",
         type=Path,
         default=Path("star-atlas-resource-aggregation.json"),
@@ -397,6 +511,17 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
     args = parse_args(argv)
 
     config = load_json(args.config)
+    idl_reference = load_json(args.idl_reference) if args.idl_reference.exists() else None
+    resolved_targets = resolve_targets_with_idl(config, idl_reference)
+    effective_config = {
+        **config,
+        "targets": resolved_targets,
+    }
+
+    if args.dump_resolved_config:
+        args.dump_resolved_config.parent.mkdir(parents=True, exist_ok=True)
+        with args.dump_resolved_config.open("w", encoding="utf-8") as fh:
+            json.dump(effective_config, fh, ensure_ascii=False, indent=2)
 
     rpc = SolanaRpc(
         RpcConfig(
@@ -408,7 +533,7 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
         )
     )
 
-    payload = aggregate_all(rpc, config)
+    payload = aggregate_all(rpc, effective_config)
 
     args.out_json.parent.mkdir(parents=True, exist_ok=True)
     with args.out_json.open("w", encoding="utf-8") as fh:
@@ -422,6 +547,7 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
     print("=== Star Atlas Resource Aggregation ===")
     print(f"RPC: {payload['rpcUrl']} ({payload['commitment']})")
     print(f"Targets scanned: {len(payload['targets'])}")
+    print(f"IDL reference loaded: {'yes' if idl_reference is not None else 'no'}")
     print("Grand totals:")
     print(f"  food:     {grand['food']}")
     print(f"  fuel:     {grand['fuel']}")

@@ -4,6 +4,8 @@
     {
       "name": "cargo_player_inventory",
       "enabled": false,
+      "idl_section": "cargoAccounts",
+      "idl_account": "cargoPod",
       "program_id": "Cargo2VNTPPTi9c1vq1Jw5d3BWUNr18MjRtSupAghKEk",
       "data_size": null,
       "memcmp": [],
@@ -21,6 +23,8 @@
     {
       "name": "sage_resource_account",
       "enabled": false,
+      "idl_section": "sageAccounts",
+      "idl_account": "resource",
       "program_id": "SAGE2HAwep459SNq61LHvjxPk4pLPEJLoMETef7f7EE",
       "decoder": {
         "type": "u64_fields",
