@@ -566,6 +566,19 @@ type WhalesSnapshot = {
   polisTrades: WhaleTrade[];
 };
 
+type StarAtlasTickerToken = {
+  symbol: "ATLAS" | "POLIS";
+  priceUsd: number;
+  change24hPct: number | null;
+};
+
+type StarAtlasTickerSnapshot = {
+  utcDateKey: string;
+  updatedAt: string;
+  atlas: StarAtlasTickerToken;
+  polis: StarAtlasTickerToken;
+};
+
 const LOCAL_CRAFT_REFERENCE_ITEMS: CraftCatalogItem[] = [
   { name: "Aerogel", group: "compound-material", tier: null, verified: false, recipeDraft: "-", output: "1x", status: "Справочник" },
   { name: "Crystal Lattice", group: "compound-material", tier: null, verified: false, recipeDraft: "-", output: "1x", status: "Справочник" },
@@ -953,6 +966,8 @@ function App() {
   const [whalesData, setWhalesData] = useState<WhalesSnapshot | null>(null);
   const [whalesLoading, setWhalesLoading] = useState(false);
   const [whalesError, setWhalesError] = useState<string | null>(null);
+  const [tickerData, setTickerData] = useState<StarAtlasTickerSnapshot | null>(null);
+  const [tickerLoading, setTickerLoading] = useState(false);
   const [bridgeRole, setBridgeRole] = useState<BridgeRole>("Captain");
   const [bridgeProfile, setBridgeProfile] = useState<BridgeC4Profile>("c4-transition");
   const [bridgeConfig, setBridgeConfig] = useState<BridgeConfig | null>(null);
@@ -2258,6 +2273,18 @@ function App() {
     }
   }, []);
 
+  const loadTicker = useCallback(async () => {
+    setTickerLoading(true);
+    try {
+      const payload = await apiRequest<StarAtlasTickerSnapshot>("/api/market/star-atlas-ticker");
+      setTickerData(payload);
+    } catch (requestError) {
+      console.error(requestError);
+    } finally {
+      setTickerLoading(false);
+    }
+  }, []);
+
   const loadBridgeRuntime = useCallback(async (
     role: BridgeRole = bridgeRole,
     profile: BridgeC4Profile = bridgeProfile,
@@ -2515,6 +2542,12 @@ function App() {
       void loadWhales();
     }
   }, [activeTab, whalesData, whalesLoading, loadWhales]);
+
+  useEffect(() => {
+    if (!tickerData && !tickerLoading) {
+      void loadTicker();
+    }
+  }, [loadTicker, tickerData, tickerLoading]);
 
   useEffect(() => {
     if (activeTab === "archive" && !archiveData && !archiveLoading) {
@@ -2790,8 +2823,60 @@ function App() {
     setBridgeWorkspaceView(null);
   };
 
+  const formatTickerPriceUsd = (value: number) => {
+    if (value >= 1) {
+      return value.toLocaleString("ru-RU", {
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 4,
+      });
+    }
+
+    return value.toLocaleString("ru-RU", {
+      minimumFractionDigits: 4,
+      maximumFractionDigits: 8,
+    });
+  };
+
   return (
     <main className="page">
+      <section className="global-ticker" aria-label="Курс ATLAS и POLIS">
+        <div className="global-ticker-inner">
+          <div className="global-ticker-title">SA Market Pulse</div>
+          {tickerData ? (
+            <>
+              {[tickerData.atlas, tickerData.polis].map((token) => {
+                const isUp = (token.change24hPct ?? 0) >= 0;
+                const changeLabel =
+                  token.change24hPct == null
+                    ? "n/a"
+                    : `${isUp ? "+" : ""}${token.change24hPct.toFixed(2)}%`;
+
+                return (
+                  <div className="ticker-chip" key={token.symbol}>
+                    <div className="ticker-chip-symbol">{token.symbol}</div>
+                    <div className="ticker-chip-price">${formatTickerPriceUsd(token.priceUsd)}</div>
+                    <div
+                      className={
+                        isUp
+                          ? "ticker-chip-change ticker-chip-change-up"
+                          : "ticker-chip-change ticker-chip-change-down"
+                      }
+                    >
+                      {changeLabel}
+                    </div>
+                  </div>
+                );
+              })}
+              <div className="ticker-meta">
+                24h, UTC day • {new Date(tickerData.updatedAt).toLocaleString("ru-RU", { timeZone: "UTC", hour12: false })} UTC
+              </div>
+            </>
+          ) : (
+            <div className="ticker-meta">{tickerLoading ? "Загрузка курса..." : "Курс временно недоступен"}</div>
+          )}
+        </div>
+      </section>
+
       <header className="hero">
         <p className="tag">Star Atlas Command Center</p>
         <h1>
