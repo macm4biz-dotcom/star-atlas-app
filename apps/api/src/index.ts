@@ -1682,20 +1682,20 @@ function calculateR4OrderVolumes(aliases: string[]) {
   const normalizedAliases = aliases.map((alias) => alias.toLowerCase());
 
   const sellOrderVolume = marketListings
-    .filter((listing) => listing.status === "active" && listing.itemClass === "Resource")
+    .filter(
+      (listing) =>
+        listing.status === "active" &&
+        listing.itemClass === "Resource" &&
+        listing.paymentToken === "ATLAS",
+    )
     .filter((listing) => {
       const search = `${listing.itemName} ${listing.note || ""}`.toLowerCase();
       return normalizedAliases.some((alias) => search.includes(alias));
     })
     .reduce((sum, listing) => sum + Math.max(0, Number(listing.quantity || 0)), 0);
 
-  const buyOrderVolume = barterOffers
-    .filter((offer) => offer.status === "open")
-    .filter((offer) => {
-      const search = `${offer.wantItem} ${offer.note || ""}`.toLowerCase();
-      return normalizedAliases.some((alias) => search.includes(alias));
-    })
-    .length;
+  // Barter offers are item-for-item swaps, not ATLAS-denominated market buys.
+  const buyOrderVolume = 0;
 
   return {
     buyOrderVolume,
@@ -3412,7 +3412,7 @@ const marketListings: MarketListing[] = [
     itemClass: "Resource",
     quantity: 200,
     priceUsd: 92,
-    paymentToken: "USDC",
+    paymentToken: "ATLAS",
     sellerWallet: "DemoSellerC",
     status: "active",
     createdAt: new Date(Date.now() - 1000 * 60 * 20).toISOString(),
