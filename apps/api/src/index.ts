@@ -3248,15 +3248,13 @@ async function fetchBridgeR4Metrics(): Promise<BridgeR4Metrics> {
       totalPlayerBalanceKnown = false;
     }
 
-    // Получить создано за сегодня
     const createdByDate = new Map<string, number>();
     for (const entry of productionEntries) {
       createdByDate.set(entry.utcDateKey, Number(Math.max(0, Number(entry.created || 0)).toFixed(6)));
     }
-    // createdToday будет пересчитан ниже из on-chain снимков (если доступны)
-    let createdToday = Number((createdByDate.get(utcDateKey) || 0).toFixed(6)); // fallback: seed
-    // consumedToday из Helius BURN-транзакций (если доступны)
+    let createdToday = 0;
     let consumedToday = 0;
+    const priorBalanceHistory = hasOnchainMintData ? await readR4BalanceHistory(resource.key) : null;
 
     const orderbook = orderbookByResource.get(resource.key);
     const marketDerivedPriceUsd =
@@ -3285,14 +3283,11 @@ async function fetchBridgeR4Metrics(): Promise<BridgeR4Metrics> {
       }
       if (heliusActivity && heliusActivity.minted > 0) {
         createdToday = Number(heliusActivity.minted.toFixed(6));
-      } else {
-        const yesterdayDateKey = formatUtcDateKey(new Date(now.getTime() - 86_400_000));
-        const yesterdaySnap = balanceHistory.snapshots.find((s) => s.utcDateKey === yesterdayDateKey);
-        if (yesterdaySnap) {
-          const netChange = totalSupply - yesterdaySnap.totalSupply;
-          if (netChange > 0) {
-            createdToday = Number(Math.max(0, netChange + consumedToday).toFixed(6));
-          }
+      } else if (priorBalanceHistory?.snapshots.length) {
+        const baselineSnapshot = priorBalanceHistory.snapshots[priorBalanceHistory.snapshots.length - 1];
+        const netChange = totalSupply - baselineSnapshot.totalSupply;
+        if (netChange >= 0) {
+          createdToday = Number(Math.max(0, netChange + consumedToday).toFixed(6));
         }
       }
     }
@@ -3309,7 +3304,9 @@ async function fetchBridgeR4Metrics(): Promise<BridgeR4Metrics> {
       dailyConsumptions.push(Number(consumedForDay.toFixed(6)));
     }
 
-    const dailyConsumption = Number((dailyConsumptions[dailyConsumptions.length - 1] || 0).toFixed(6));
+    const dailyConsumption = Number(
+      (consumedToday > 0 ? consumedToday : dailyConsumptions[dailyConsumptions.length - 1] || 0).toFixed(6),
+    );
     const avgDailyConsumption7d = Number(
       averageNumbers(dailyConsumptions.slice(-7)).toFixed(6),
     );
