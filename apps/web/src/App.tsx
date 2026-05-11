@@ -4439,7 +4439,6 @@ function App() {
                         <th>Всего Флотов</th>
                         <th>Total Mined</th>
                         <th>У Игроков</th>
-                        <th>У Разработчиков</th>
                         <th>За сутки</th>
                         <th>Сигнал</th>
                         <th>Hardness</th>
@@ -4483,12 +4482,6 @@ function App() {
                             {formatTokenAmountWithCoverage(
                               resource.playerWalletBalance,
                               miningMetrics.reserveSummary?.playerWalletsScanned || 0,
-                            )}
-                          </td>
-                          <td>
-                            {formatTokenAmountWithCoverage(
-                              resource.developerWalletBalance,
-                              miningMetrics.reserveSummary?.developerWalletsScanned || 0,
                             )}
                           </td>
                           <td title={formatIntegerString(resource.dailyMined)} className="metric-compact">
