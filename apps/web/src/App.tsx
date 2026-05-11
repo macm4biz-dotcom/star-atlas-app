@@ -543,38 +543,6 @@ function parseIntegerStringToBigInt(value?: string) {
   }
 }
 
-  const planetaryPoolTotals = useMemo(() => {
-    if (!miningMetrics?.resources?.length) {
-      return {
-        totalMined: "0",
-        totalDailyMined: "0",
-        resourcesWithMiningData: 0,
-      };
-    }
-
-    let totalMined = 0n;
-    let totalDailyMined = 0n;
-    let resourcesWithMiningData = 0;
-
-    for (const resource of miningMetrics.resources) {
-      const mined = parseIntegerStringToBigInt(resource.totalMined);
-      const daily = parseIntegerStringToBigInt(resource.dailyMined);
-
-      if (mined > 0n || daily > 0n) {
-        resourcesWithMiningData += 1;
-      }
-
-      totalMined += mined;
-      totalDailyMined += daily;
-    }
-
-    return {
-      totalMined: totalMined.toString(),
-      totalDailyMined: totalDailyMined.toString(),
-      resourcesWithMiningData,
-    };
-  }, [miningMetrics]);
-
 function formatReserveSignal(signal?: "deficit-risk" | "balanced" | "surplus-risk") {
   if (signal === "deficit-risk") return "Риск дефицита";
   if (signal === "surplus-risk") return "Риск избытка";
@@ -859,6 +827,38 @@ function App() {
       })),
     [craftCatalogItems],
   );
+
+  const planetaryPoolTotals = useMemo(() => {
+    if (!miningMetrics?.resources?.length) {
+      return {
+        totalMined: "0",
+        totalDailyMined: "0",
+        resourcesWithMiningData: 0,
+      };
+    }
+
+    let totalMined = 0n;
+    let totalDailyMined = 0n;
+    let resourcesWithMiningData = 0;
+
+    for (const resource of miningMetrics.resources) {
+      const mined = parseIntegerStringToBigInt(resource.totalMined);
+      const daily = parseIntegerStringToBigInt(resource.dailyMined);
+
+      if (mined > 0n || daily > 0n) {
+        resourcesWithMiningData += 1;
+      }
+
+      totalMined += mined;
+      totalDailyMined += daily;
+    }
+
+    return {
+      totalMined: totalMined.toString(),
+      totalDailyMined: totalDailyMined.toString(),
+      resourcesWithMiningData,
+    };
+  }, [miningMetrics]);
 
   const bridgeFilteredAuditData = useMemo(() => {
     const periodMsMap: Record<BridgeAuditPeriod, number> = {
