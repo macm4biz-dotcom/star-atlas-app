@@ -710,7 +710,7 @@ function formatMintSourceLabel(source?: "onchain" | "env" | "unresolved") {
 function formatR4MintSourceLabel(source?: "r4-env" | "bridge-env" | "unresolved") {
   if (source === "r4-env") return "r4-env";
   if (source === "bridge-env") return "bridge-env";
-  return "on-chain PDA";
+  return "on-chain PDA (без SPL mint)";
 }
 
 function getErrorMessage(error: unknown) {
@@ -4731,7 +4731,8 @@ function App() {
             <h3>Ресурсы R4</h3>
             <p className="subtitle">
               Ключевые расходники: Еда, Патроны, Инструменты, Топливо.
-              Показываем выпуск (крафт/стейкинг), расход, остаток, сигналы и рынок.
+              Ресурсы учитываются как on-chain PDA-состояние (не SPL mint): показываем выпуск,
+              расход, остаток, сигналы и рынок.
             </p>
 
             {r4Error ? <p className="error">{r4Error}</p> : null}
