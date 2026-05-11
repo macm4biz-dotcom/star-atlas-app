@@ -14,6 +14,7 @@ import {
   Transaction,
   TransactionInstruction,
 } from "@solana/web3.js";
+import { Market } from "@project-serum/serum";
 import { AnchorProvider, Program, Wallet } from "@staratlas/anchor";
 import { readAllFromRPC } from "@staratlas/data-source";
 import { Fleet, MineItem, Resource, SAGE_IDL } from "@staratlas/sage";
@@ -1371,7 +1372,7 @@ type R4ResourceMetrics = {
   key: R4ResourceKey;
   label: string;
   mint?: string;
-  mintSource?: "r4-env" | "bridge-env" | "unresolved";
+  mintSource?: "r4-env" | "bridge-env" | "staratlas-market" | "unresolved";
   totalCreated: number;  // всего создано за всё время
   totalCreatedIsLowerBound: boolean;
   createdToday: number;  // создано за сегодня
@@ -1561,6 +1562,161 @@ const STAR_ATLAS_MAINNET_PROGRAM_IDS = {
   playerProfile: "pprofELXjL5Kck7Jn5hCpwAL82DpTkSYBENzahVtbc9",
   sourceUrl: "https://build.staratlas.com/dev-resources/mainnet-program-ids",
 } as const;
+
+const STAR_ATLAS_GALAXY_API_BASE = "https://galaxy.staratlas.com";
+const STAR_ATLAS_ATLAS_MINT = "ATLASXmbPQxBUYbxPsV97usA3fPQYEqzQBUHgiFCUsXx";
+const R4_STAR_ATLAS_DEFAULT_MINTS: Record<R4ResourceKey, string> = {
+  food: "foodQJAztMzX1DKpLaiounNe2BDMds5RNuPC6jsNrDG",
+  ammunition: "ammoK8AkX2wnebQb35cDAZtTkvsXQbi82cGeTnUvvfK",
+  toolkit: "tooLsNYLiVqzg8o4m3L2Uetbn62mvMWRqkog6PQeYKL",
+  fuel: "fueL3hBZjLLLJHiFH9cqZoozTG3XQZ53diwFPwbzNim",
+};
+
+type R4OrderbookMetrics = {
+  bestAskAtlas: number | null;
+  buyOrderVolume: number;
+  sellOrderVolume: number;
+};
+
+let r4OrderbookCache: { payload: Map<R4ResourceKey, R4OrderbookMetrics>; fetchedAt: number } | null = null;
+const R4_ORDERBOOK_CACHE_TTL_MS = 2 * 60 * 1000;
+
+async function fetchGalaxyNftByMint(mint: string): Promise<{
+  marketId: string;
+  serumProgramId: string;
+} | null> {
+  const payload = await fetchJsonWithTimeout(
+    `${STAR_ATLAS_GALAXY_API_BASE}/nfts/${encodeURIComponent(mint)}`,
+    10_000,
+  );
+  const record = asRecord(payload);
+  if (!record) {
+    return null;
+  }
+
+  const markets = Array.isArray(record.markets) ? record.markets : [];
+  for (const marketEntry of markets) {
+    const marketRecord = asRecord(marketEntry);
+    if (!marketRecord) {
+      continue;
+    }
+
+    const quotePair = String(marketRecord.quotePair || "").trim().toUpperCase();
+    if (quotePair !== "ATLAS") {
+      continue;
+    }
+
+    const marketId = String(marketRecord.id || "").trim();
+    const serumProgramId = String(marketRecord.serumProgramId || "").trim();
+    if (!marketId || !serumProgramId) {
+      continue;
+    }
+
+    return {
+      marketId,
+      serumProgramId,
+    };
+  }
+
+  return null;
+}
+
+async function fetchR4OrderbookMetricsFromStarAtlas(
+  connection: Connection,
+  resources: Array<{ key: R4ResourceKey; mint?: string }>,
+): Promise<Map<R4ResourceKey, R4OrderbookMetrics>> {
+  const now = Date.now();
+  if (r4OrderbookCache && now - r4OrderbookCache.fetchedAt < R4_ORDERBOOK_CACHE_TTL_MS) {
+    return r4OrderbookCache.payload;
+  }
+
+  const result = new Map<R4ResourceKey, R4OrderbookMetrics>();
+  const entries = resources.filter((resource) => Boolean(resource.mint));
+
+  await Promise.all(
+    entries.map(async (resource) => {
+      if (!resource.mint) {
+        return;
+      }
+
+      try {
+        const marketMeta = await fetchGalaxyNftByMint(resource.mint);
+        if (!marketMeta) {
+          return;
+        }
+
+        const market = await Market.load(
+          connection,
+          new PublicKey(marketMeta.marketId),
+          {},
+          new PublicKey(marketMeta.serumProgramId),
+        );
+
+        const [asks, bids] = await Promise.all([
+          market.loadAsks(connection),
+          market.loadBids(connection),
+        ]);
+
+        let asksVolume = 0;
+        let bidsVolume = 0;
+        let bestAskAtlas: number | null = null;
+        let bestBidAtlas: number | null = null;
+
+        for (const order of asks) {
+          const price = Number(order.price || 0);
+          const size = Number(order.size || 0);
+          if (!Number.isFinite(price) || !Number.isFinite(size) || price <= 0 || size <= 0) {
+            continue;
+          }
+          asksVolume += size;
+          if (bestAskAtlas == null || price < bestAskAtlas) {
+            bestAskAtlas = price;
+          }
+        }
+
+        for (const order of bids) {
+          const price = Number(order.price || 0);
+          const size = Number(order.size || 0);
+          if (!Number.isFinite(price) || !Number.isFinite(size) || price <= 0 || size <= 0) {
+            continue;
+          }
+          bidsVolume += size;
+          if (bestBidAtlas == null || price > bestBidAtlas) {
+            bestBidAtlas = price;
+          }
+        }
+
+        // In some legacy markets the perceived side can appear inverted via API.
+        // Use the non-empty side as sell-side volume fallback to avoid returning 0.
+        const sellOrderVolume = asksVolume > 0 ? asksVolume : bidsVolume;
+        const buyOrderVolume = bidsVolume > 0 ? bidsVolume : asksVolume;
+        const bestVisiblePrice = bestAskAtlas != null ? bestAskAtlas : bestBidAtlas;
+
+        result.set(resource.key, {
+          bestAskAtlas: bestVisiblePrice,
+          buyOrderVolume: Number(buyOrderVolume.toFixed(6)),
+          sellOrderVolume: Number(sellOrderVolume.toFixed(6)),
+        });
+      } catch (error) {
+        app.log.warn(
+          {
+            resource: resource.key,
+            mint: resource.mint,
+            error: String(error),
+          },
+          "Failed to fetch R4 orderbook from Star Atlas market",
+        );
+      }
+    }),
+  );
+
+  r4OrderbookCache = {
+    payload: result,
+    fetchedAt: now,
+  };
+
+  return result;
+}
 
 function normalizeR4ProductionEntries(entries: unknown): R4DailyProductionEntry[] {
   if (!Array.isArray(entries)) {
@@ -2739,7 +2895,7 @@ async function fetchBridgeR4Metrics(): Promise<BridgeR4Metrics> {
     );
 
     let mint: string | undefined;
-    let mintSource: "r4-env" | "bridge-env" | "unresolved" = "unresolved";
+    let mintSource: "r4-env" | "bridge-env" | "staratlas-market" | "unresolved" = "unresolved";
 
     for (const keyCandidate of keyCandidates) {
       const fromR4 = r4MintMap.get(keyCandidate);
@@ -2753,6 +2909,14 @@ async function fetchBridgeR4Metrics(): Promise<BridgeR4Metrics> {
       if (fromBridge) {
         mint = fromBridge;
         mintSource = "bridge-env";
+      }
+    }
+
+    if (!mint) {
+      const fallbackMint = R4_STAR_ATLAS_DEFAULT_MINTS[definition.key];
+      if (fallbackMint) {
+        mint = fallbackMint;
+        mintSource = "staratlas-market";
       }
     }
 
@@ -2790,7 +2954,17 @@ async function fetchBridgeR4Metrics(): Promise<BridgeR4Metrics> {
     }
   }
 
-  const pricesByMint = await fetchPricesUsdByMintViaJupiter(Array.from(trackedMints));
+  const [pricesByMint, pricesByCoingeckoId, orderbookByResource] = await Promise.all([
+    fetchPricesUsdByMintViaJupiter(Array.from(new Set([...trackedMints, STAR_ATLAS_ATLAS_MINT]))),
+    fetchPricesUsdByCoingeckoId(["star-atlas"]),
+    fetchR4OrderbookMetricsFromStarAtlas(
+      connection,
+      r4Resources.map((resource) => ({ key: resource.key, mint: resource.mint })),
+    ),
+  ]);
+  const atlasUsdPrice = Number(
+    pricesByMint[STAR_ATLAS_ATLAS_MINT] || pricesByCoingeckoId["star-atlas"] || 0,
+  );
   const productionHistory = await readR4ProductionHistory();
   const productionHistorySource = productionHistory.source || "manual-seed";
   const isSeedHistorySource = productionHistorySource.toLowerCase().includes("manual-seed");
@@ -2866,7 +3040,13 @@ async function fetchBridgeR4Metrics(): Promise<BridgeR4Metrics> {
     }
     const createdToday = Number((createdByDate.get(utcDateKey) || 0).toFixed(6));
 
-    const priceUsd = mint ? Number((pricesByMint[mint] || 0).toFixed(8)) : 0;
+    const orderbook = orderbookByResource.get(resource.key);
+    const marketDerivedPriceUsd =
+      orderbook?.bestAskAtlas != null && atlasUsdPrice > 0
+        ? orderbook.bestAskAtlas * atlasUsdPrice
+        : 0;
+    const fallbackPriceUsd = mint ? Number(pricesByMint[mint] || 0) : 0;
+    const priceUsd = Number((marketDerivedPriceUsd > 0 ? marketDerivedPriceUsd : fallbackPriceUsd).toFixed(8));
     const balanceHistory = hasOnchainMintData
       ? await appendR4BalanceSnapshot(resource.key, {
           utcDateKey,
@@ -2921,7 +3101,9 @@ async function fetchBridgeR4Metrics(): Promise<BridgeR4Metrics> {
         ? Number((((priceUsd - weekSnapshot.priceUsd) / weekSnapshot.priceUsd) * 100).toFixed(2))
         : null;
 
-    const { buyOrderVolume, sellOrderVolume } = calculateR4OrderVolumes(resource.aliases);
+    const fallbackOrderVolumes = calculateR4OrderVolumes(resource.aliases);
+    const buyOrderVolume = Number((orderbook?.buyOrderVolume ?? fallbackOrderVolumes.buyOrderVolume).toFixed(6));
+    const sellOrderVolume = Number((orderbook?.sellOrderVolume ?? fallbackOrderVolumes.sellOrderVolume).toFixed(6));
     const { signal, reason } = calculateR4Signal({
       dailyConsumption,
       avgDailyConsumption7d,

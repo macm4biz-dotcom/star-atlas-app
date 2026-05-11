@@ -14,6 +14,7 @@
   "private": true,
   "dependencies": {
     "@fastify/cors": "^11.1.0",
+    "@project-serum/serum": "^0.13.65",
     "@solana/web3.js": "^1.98.4",
     "@star-atlas/shared": "1.0.0",
     "@staratlas/data-source": "^0.9.0",

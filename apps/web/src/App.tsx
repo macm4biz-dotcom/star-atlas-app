@@ -307,7 +307,7 @@ type R4ResourceMetrics = {
   key: "food" | "ammunition" | "toolkit" | "fuel";
   label: string;
   mint?: string;
-  mintSource?: "r4-env" | "bridge-env" | "unresolved";
+  mintSource?: "r4-env" | "bridge-env" | "staratlas-market" | "unresolved";
   totalCreated: number;
   totalCreatedIsLowerBound: boolean;
   createdToday: number;
@@ -723,9 +723,10 @@ function formatMintSourceLabel(source?: "onchain" | "env" | "unresolved") {
   return "missing";
 }
 
-function formatR4MintSourceLabel(source?: "r4-env" | "bridge-env" | "unresolved") {
+function formatR4MintSourceLabel(source?: "r4-env" | "bridge-env" | "staratlas-market" | "unresolved") {
   if (source === "r4-env") return "r4-env";
   if (source === "bridge-env") return "bridge-env";
+  if (source === "staratlas-market") return "staratlas-market";
   return "on-chain PDA (без SPL mint)";
 }
 
