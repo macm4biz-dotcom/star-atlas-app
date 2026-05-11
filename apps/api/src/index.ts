@@ -7356,26 +7356,25 @@ type WhalesSnapshot = {
 };
 
 type StarAtlasTickerSnapshot = {
-  utcDateKey: string;
   updatedAt: string;
-  atlas: {
-    symbol: "ATLAS";
+  utcDateKey: string;
+  refreshIntervalMinutes: number;
+  tokens: Array<{
+    symbol: "ATLAS" | "POLIS" | "ZINC";
     priceUsd: number;
     change24hPct: number | null;
-  };
-  polis: {
-    symbol: "POLIS";
-    priceUsd: number;
-    change24hPct: number | null;
-  };
+    trend24h: number[];
+    placeholder?: boolean;
+  }>;
 };
 
 let whalesCache: { utcDateKey: string; data: WhalesSnapshot; expiresAt: number } | null = null;
 let starAtlasTickerCache: {
-  utcDateKey: string;
   data: StarAtlasTickerSnapshot;
   expiresAt: number;
 } | null = null;
+
+const STAR_ATLAS_TICKER_REFRESH_MS = 10 * 60 * 1000;
 
 async function fetchTopHolders(mint: string, connection: Connection): Promise<WhaleHolder[]> {
   try {
@@ -7475,29 +7474,70 @@ async function buildWhalesSnapshot(): Promise<WhalesSnapshot> {
   return { fetchedAt: new Date().toISOString(), atlasHolders, polisHolders, atlasTrades, polisTrades };
 }
 
+async function fetchCoingecko24hTrend(id: string): Promise<number[]> {
+  try {
+    const response = await fetch(
+      `https://api.coingecko.com/api/v3/coins/${encodeURIComponent(id)}/market_chart?vs_currency=usd&days=1&interval=hourly`,
+    );
+
+    if (!response.ok) {
+      return [];
+    }
+
+    const payload = (await response.json()) as { prices?: Array<[number, number]> };
+    const points = (payload.prices || [])
+      .map((row) => Number(row?.[1] || 0))
+      .filter((value) => Number.isFinite(value) && value > 0);
+
+    return points.slice(-24);
+  } catch {
+    return [];
+  }
+}
+
 async function buildStarAtlasTickerSnapshot(now: Date): Promise<StarAtlasTickerSnapshot> {
   const utcDateKey = formatUtcDateKey(now);
-  const ticker = await fetchTickerByCoingeckoId(["star-atlas", "star-atlas-dao"]);
+  const [ticker, atlasTrend, polisTrend] = await Promise.all([
+    fetchTickerByCoingeckoId(["star-atlas", "star-atlas-dao"]),
+    fetchCoingecko24hTrend("star-atlas"),
+    fetchCoingecko24hTrend("star-atlas-dao"),
+  ]);
+
+  const atlasPrice = Number(ticker["star-atlas"]?.priceUsd || 0);
+  const polisPrice = Number(ticker["star-atlas-dao"]?.priceUsd || 0);
+  const zincTrend = Array.from({ length: 24 }, (_item, index) => 1 + index * 0.001);
 
   return {
-    utcDateKey,
     updatedAt: now.toISOString(),
-    atlas: {
-      symbol: "ATLAS",
-      priceUsd: Number(ticker["star-atlas"]?.priceUsd || 0),
-      change24hPct:
-        typeof ticker["star-atlas"]?.change24hPct === "number"
-          ? Number(ticker["star-atlas"]?.change24hPct)
-          : null,
-    },
-    polis: {
-      symbol: "POLIS",
-      priceUsd: Number(ticker["star-atlas-dao"]?.priceUsd || 0),
-      change24hPct:
-        typeof ticker["star-atlas-dao"]?.change24hPct === "number"
-          ? Number(ticker["star-atlas-dao"]?.change24hPct)
-          : null,
-    },
+    utcDateKey,
+    refreshIntervalMinutes: 10,
+    tokens: [
+      {
+        symbol: "ZINC",
+        priceUsd: 0,
+        change24hPct: null,
+        trend24h: zincTrend,
+        placeholder: true,
+      },
+      {
+        symbol: "ATLAS",
+        priceUsd: atlasPrice,
+        change24hPct:
+          typeof ticker["star-atlas"]?.change24hPct === "number"
+            ? Number(ticker["star-atlas"]?.change24hPct)
+            : null,
+        trend24h: atlasTrend.length > 1 ? atlasTrend : [atlasPrice, atlasPrice],
+      },
+      {
+        symbol: "POLIS",
+        priceUsd: polisPrice,
+        change24hPct:
+          typeof ticker["star-atlas-dao"]?.change24hPct === "number"
+            ? Number(ticker["star-atlas-dao"]?.change24hPct)
+            : null,
+        trend24h: polisTrend.length > 1 ? polisTrend : [polisPrice, polisPrice],
+      },
+    ],
   };
 }
 
@@ -7522,22 +7562,15 @@ app.get("/api/whales", async (_request, reply) => {
 
 app.get("/api/market/star-atlas-ticker", async (_request, reply) => {
   const now = new Date();
-  const utcDateKey = formatUtcDateKey(now);
-
-  if (
-    starAtlasTickerCache &&
-    starAtlasTickerCache.utcDateKey === utcDateKey &&
-    starAtlasTickerCache.expiresAt > now.getTime()
-  ) {
+  if (starAtlasTickerCache && starAtlasTickerCache.expiresAt > now.getTime()) {
     return starAtlasTickerCache.data;
   }
 
   try {
     const data = await buildStarAtlasTickerSnapshot(now);
     starAtlasTickerCache = {
-      utcDateKey,
       data,
-      expiresAt: getNextUtcReset(now).getTime(),
+      expiresAt: now.getTime() + STAR_ATLAS_TICKER_REFRESH_MS,
     };
     return data;
   } catch (err) {

@@ -13,7 +13,7 @@
 
 .global-ticker-inner {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 10px;
   flex-wrap: wrap;
   padding: 10px 12px;
@@ -32,53 +32,95 @@
   letter-spacing: 0.18em;
   text-transform: uppercase;
   color: rgba(184, 211, 223, 0.8);
-  padding: 0 8px 0 4px;
+  padding: 8px 8px 0 4px;
 }
 
-.ticker-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 10px;
-  border-radius: 999px;
+.ticker-card {
+  width: min(250px, 100%);
+  border-radius: 12px;
   border: 1px solid rgba(158, 230, 255, 0.24);
   background: rgba(9, 24, 30, 0.76);
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
 }
 
-.ticker-chip-symbol {
-  font-size: 11px;
+.ticker-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.ticker-card-symbol {
+  font-size: 12px;
   font-weight: 700;
   color: #b9f4ff;
   letter-spacing: 0.08em;
 }
 
-.ticker-chip-price {
-  font-size: 13px;
+.ticker-card-badge {
+  font-size: 10px;
+  color: rgba(184, 211, 223, 0.9);
+  border: 1px dashed rgba(184, 211, 223, 0.45);
+  border-radius: 8px;
+  padding: 2px 6px;
+}
+
+.ticker-card-price {
+  font-size: 16px;
   font-weight: 700;
   color: #f1fbff;
 }
 
-.ticker-chip-change {
+.ticker-card-change {
+  display: inline-flex;
+  align-self: flex-start;
   font-size: 12px;
   font-weight: 700;
   padding: 2px 7px;
   border-radius: 999px;
 }
 
-.ticker-chip-change-up {
+.ticker-card-change-up {
   background: rgba(129, 246, 181, 0.16);
   color: #8df6bc;
 }
 
-.ticker-chip-change-down {
+.ticker-card-change-down {
   background: rgba(255, 113, 143, 0.16);
   color: #ff9cb3;
+}
+
+.ticker-chart {
+  width: 100%;
+  height: 64px;
+  display: block;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.04), rgba(255, 255, 255, 0.01));
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.ticker-chart-line {
+  fill: none;
+  stroke-width: 2.2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.ticker-chart-line-up {
+  stroke: #8df6bc;
+}
+
+.ticker-chart-line-down {
+  stroke: #ff9cb3;
 }
 
 .ticker-meta {
   margin-left: auto;
   font-size: 11px;
   color: rgba(184, 211, 223, 0.78);
+  padding-top: 8px;
 }
 
 @media (max-width: 760px) {
@@ -90,6 +132,10 @@
     width: 100%;
     margin-left: 0;
     margin-top: 4px;
+  }
+
+  .ticker-card {
+    width: 100%;
   }
 }
 

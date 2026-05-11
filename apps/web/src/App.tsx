@@ -567,16 +567,18 @@ type WhalesSnapshot = {
 };
 
 type StarAtlasTickerToken = {
-  symbol: "ATLAS" | "POLIS";
+  symbol: "ATLAS" | "POLIS" | "ZINC";
   priceUsd: number;
   change24hPct: number | null;
+  trend24h: number[];
+  placeholder?: boolean;
 };
 
 type StarAtlasTickerSnapshot = {
-  utcDateKey: string;
   updatedAt: string;
-  atlas: StarAtlasTickerToken;
-  polis: StarAtlasTickerToken;
+  utcDateKey: string;
+  refreshIntervalMinutes: number;
+  tokens: StarAtlasTickerToken[];
 };
 
 const LOCAL_CRAFT_REFERENCE_ITEMS: CraftCatalogItem[] = [
@@ -2550,6 +2552,16 @@ function App() {
   }, [loadTicker, tickerData, tickerLoading]);
 
   useEffect(() => {
+    const intervalId = window.setInterval(() => {
+      void loadTicker();
+    }, 10 * 60 * 1000);
+
+    return () => {
+      window.clearInterval(intervalId);
+    };
+  }, [loadTicker]);
+
+  useEffect(() => {
     if (activeTab === "archive" && !archiveData && !archiveLoading) {
       void loadNewsArchive();
     }
@@ -2837,6 +2849,23 @@ function App() {
     });
   };
 
+  const buildSparklinePath = (values: number[], width: number, height: number) => {
+    if (!values.length) return "";
+    if (values.length === 1) return `M 0 ${height / 2} L ${width} ${height / 2}`;
+
+    const min = Math.min(...values);
+    const max = Math.max(...values);
+    const spread = max - min || 1;
+
+    return values
+      .map((value, index) => {
+        const x = (index / (values.length - 1)) * width;
+        const y = height - ((value - min) / spread) * height;
+        return `${index === 0 ? "M" : "L"} ${x.toFixed(2)} ${y.toFixed(2)}`;
+      })
+      .join(" ");
+  };
+
   return (
     <main className="page">
       <section className="global-ticker" aria-label="Курс ATLAS и POLIS">
@@ -2844,31 +2873,49 @@ function App() {
           <div className="global-ticker-title">SA Market Pulse</div>
           {tickerData ? (
             <>
-              {[tickerData.atlas, tickerData.polis].map((token) => {
+              {tickerData.tokens.map((token) => {
                 const isUp = (token.change24hPct ?? 0) >= 0;
                 const changeLabel =
                   token.change24hPct == null
                     ? "n/a"
                     : `${isUp ? "+" : ""}${token.change24hPct.toFixed(2)}%`;
+                const chartPath = buildSparklinePath(token.trend24h, 240, 64);
 
                 return (
-                  <div className="ticker-chip" key={token.symbol}>
-                    <div className="ticker-chip-symbol">{token.symbol}</div>
-                    <div className="ticker-chip-price">${formatTickerPriceUsd(token.priceUsd)}</div>
+                  <div className="ticker-card" key={token.symbol}>
+                    <div className="ticker-card-head">
+                      <div className="ticker-card-symbol">{token.symbol}</div>
+                      {token.placeholder ? <div className="ticker-card-badge">заглушка</div> : null}
+                    </div>
+                    <div className="ticker-card-price">
+                      {token.placeholder ? "скоро" : `$${formatTickerPriceUsd(token.priceUsd)}`}
+                    </div>
                     <div
                       className={
                         isUp
-                          ? "ticker-chip-change ticker-chip-change-up"
-                          : "ticker-chip-change ticker-chip-change-down"
+                          ? "ticker-card-change ticker-card-change-up"
+                          : "ticker-card-change ticker-card-change-down"
                       }
                     >
-                      {changeLabel}
+                      {token.placeholder ? "n/a" : changeLabel}
                     </div>
+                    <svg className="ticker-chart" viewBox="0 0 240 64" role="img" aria-label={`${token.symbol} price trend 24h`}>
+                      <path
+                        d={chartPath}
+                        className={
+                          isUp
+                            ? "ticker-chart-line ticker-chart-line-up"
+                            : "ticker-chart-line ticker-chart-line-down"
+                        }
+                      />
+                    </svg>
                   </div>
                 );
               })}
               <div className="ticker-meta">
-                24h, UTC day • {new Date(tickerData.updatedAt).toLocaleString("ru-RU", { timeZone: "UTC", hour12: false })} UTC
+                24ч • обновление каждые {tickerData.refreshIntervalMinutes} минут •
+                {" "}
+                {new Date(tickerData.updatedAt).toLocaleString("ru-RU", { timeZone: "UTC", hour12: false })} UTC
               </div>
             </>
           ) : (
