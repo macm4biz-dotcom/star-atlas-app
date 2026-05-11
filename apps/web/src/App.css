@@ -1695,6 +1695,75 @@ th {
   color: #ffd9a6;
 }
 
+.resource-supply-summary {
+  margin: 0 0 14px;
+  padding: 10px 12px;
+  border: 1px solid rgba(129, 246, 181, 0.28);
+  border-radius: 10px;
+  background: rgba(129, 246, 181, 0.08);
+}
+
+.resource-supply-summary p {
+  margin: 0;
+  color: #d7ffe9;
+  font-size: 13px;
+}
+
+.planetary-pool-summary {
+  margin: 0 0 14px;
+  padding: 10px 12px;
+  border: 1px solid rgba(144, 236, 255, 0.3);
+  border-radius: 10px;
+  background: rgba(144, 236, 255, 0.08);
+}
+
+.planetary-pool-summary p {
+  margin: 0;
+  color: #d9f5ff;
+  font-size: 13px;
+}
+
+.planetary-pool-summary p + p {
+  margin-top: 6px;
+}
+
+.resource-supply-badges {
+  margin-top: 10px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.reserve-signal-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  font-size: 11px;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+.reserve-signal-badge.deficit-risk {
+  color: #ffb6b6;
+  background: rgba(255, 84, 84, 0.14);
+  border-color: rgba(255, 84, 84, 0.35);
+}
+
+.reserve-signal-badge.balanced {
+  color: #b8f5c6;
+  background: rgba(114, 222, 148, 0.14);
+  border-color: rgba(114, 222, 148, 0.35);
+}
+
+.reserve-signal-badge.surplus-risk {
+  color: #9ce8ff;
+  background: rgba(76, 183, 255, 0.14);
+  border-color: rgba(76, 183, 255, 0.35);
+}
+
 .craft-reference {
   margin-top: 28px;
   padding-top: 18px;
