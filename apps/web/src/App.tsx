@@ -610,6 +610,19 @@ function formatTokenAmountWithCoverage(value: number | undefined, scannedWallets
   return formatCompactTokenAmount(value);
 }
 
+function renderMetricWithTooltip(displayValue: string, fullValue: string) {
+  return (
+    <span
+      className="metric-tooltip"
+      data-full={fullValue}
+      title={fullValue}
+      tabIndex={0}
+    >
+      {displayValue}
+    </span>
+  );
+}
+
 function formatMintShort(mint?: string) {
   if (!mint) return "-";
   if (mint.length <= 12) return mint;
@@ -4412,9 +4425,15 @@ function App() {
                     On-chain total mined: <strong>{formatIntegerString(miningMetrics.reserveSummary.totalEstimatedReserves)}</strong>
                   </p>
                   <p>
-                    На кошельках игроков: <strong title={formatTokenAmount(miningMetrics.reserveSummary.totalPlayerWalletBalance)}>{formatCompactTokenAmount(miningMetrics.reserveSummary.totalPlayerWalletBalance)}</strong>
+                    На кошельках игроков: <strong>{renderMetricWithTooltip(
+                      formatCompactTokenAmount(miningMetrics.reserveSummary.totalPlayerWalletBalance),
+                      formatTokenAmount(miningMetrics.reserveSummary.totalPlayerWalletBalance),
+                    )}</strong>
                     {" | "}
-                    На кошельках разработчиков: <strong title={formatTokenAmount(miningMetrics.reserveSummary.totalDeveloperWalletBalance)}>{formatCompactTokenAmount(miningMetrics.reserveSummary.totalDeveloperWalletBalance)}</strong>
+                    На кошельках разработчиков: <strong>{renderMetricWithTooltip(
+                      formatCompactTokenAmount(miningMetrics.reserveSummary.totalDeveloperWalletBalance),
+                      formatTokenAmount(miningMetrics.reserveSummary.totalDeveloperWalletBalance),
+                    )}</strong>
                   </p>
                   <p>
                     Покрытие mint-картой: <strong>{miningMetrics.reserveSummary.walletCoverageResources}</strong> из <strong>{miningMetrics.resources.length}</strong>
@@ -4471,7 +4490,18 @@ function App() {
                       </tr>
                     </thead>
                     <tbody>
-                      {miningMetrics.resources.map((resource, idx: number) => (
+                      {miningMetrics.resources.map((resource, idx: number) => {
+                        const totalMinedFull = formatIntegerString(resource.totalMined);
+                        const totalMinedCompact = formatCompactIntegerString(resource.totalMined);
+                        const playerFull = formatTokenAmount(resource.playerWalletBalance);
+                        const playerCompact = formatTokenAmountWithCoverage(
+                          resource.playerWalletBalance,
+                          miningMetrics.reserveSummary?.playerWalletsScanned || 0,
+                        );
+                        const dailyMinedFull = formatIntegerString(resource.dailyMined);
+                        const dailyMinedCompact = formatCompactIntegerString(resource.dailyMined);
+
+                        return (
                         <tr
                           key={idx}
                           className={resource.resourceMint ? "" : "resource-row-no-mint"}
@@ -4497,17 +4527,14 @@ function App() {
                           <td className="resource-total">
                             <strong>{resource.totalFleets}</strong>
                           </td>
-                          <td title={formatIntegerString(resource.totalMined)} className="metric-compact">
-                            {formatCompactIntegerString(resource.totalMined)}
+                          <td className="metric-compact">
+                            {renderMetricWithTooltip(totalMinedCompact, totalMinedFull)}
                           </td>
-                          <td title={formatTokenAmount(resource.playerWalletBalance)} className="metric-compact">
-                            {formatTokenAmountWithCoverage(
-                              resource.playerWalletBalance,
-                              miningMetrics.reserveSummary?.playerWalletsScanned || 0,
-                            )}
+                          <td className="metric-compact">
+                            {renderMetricWithTooltip(playerCompact, playerFull)}
                           </td>
-                          <td title={formatIntegerString(resource.dailyMined)} className="metric-compact">
-                            {formatCompactIntegerString(resource.dailyMined)}
+                          <td className="metric-compact">
+                            {renderMetricWithTooltip(dailyMinedCompact, dailyMinedFull)}
                           </td>
                           <td>
                             <span className={`reserve-signal-badge ${resource.reserveSignal || "balanced"}`}>
@@ -4524,7 +4551,8 @@ function App() {
                           <td className="faction oni">{resource.byFaction.ONI || 0}</td>
                           <td className="faction ustur">{resource.byFaction.USTUR || 0}</td>
                         </tr>
-                      ))}
+                        );
+                      })}
                     </tbody>
                   </table>
                 </div>
