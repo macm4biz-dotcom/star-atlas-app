@@ -254,6 +254,12 @@ type MiningResourceData = {
   totalFleets: number;
   totalMined?: string;
   dailyMined?: string;
+  resourceMint?: string;
+  playerWalletBalance?: number;
+  developerWalletBalance?: number;
+  estimatedPlayerReserves?: string;
+  reserveSignal?: "deficit-risk" | "balanced" | "surplus-risk";
+  reserveSignalScore?: number;
   resourceHardness?: number;
   averageSystemRichness?: number;
   byFaction: {
@@ -269,6 +275,17 @@ type BridgeMiningMetrics = {
   resetAt: string;
   updatedAt: string;
   source?: "sage-onchain" | "rydn-fallback" | "empty";
+  reserveSummary?: {
+    totalEstimatedReserves: string;
+    totalPlayerWalletBalance: number;
+    totalDeveloperWalletBalance: number;
+    walletCoverageResources: number;
+    playerWalletsScanned: number;
+    developerWalletsScanned: number;
+    deficitRiskCount: number;
+    balancedCount: number;
+    surplusRiskCount: number;
+  };
 };
 
 type BridgeCapabilities = {
@@ -512,6 +529,17 @@ function formatIntegerString(value?: string) {
   const digitsOnly = value.replace(/\D/g, "");
   if (!digitsOnly) return "-";
   return digitsOnly.replace(/\B(?=(\d{3})+(?!\d))/g, " ");
+}
+
+function formatReserveSignal(signal?: "deficit-risk" | "balanced" | "surplus-risk") {
+  if (signal === "deficit-risk") return "Риск дефицита";
+  if (signal === "surplus-risk") return "Риск избытка";
+  return "Баланс";
+}
+
+function formatTokenAmount(value?: number) {
+  if (value == null || !Number.isFinite(value)) return "-";
+  return value.toLocaleString("ru-RU", { maximumFractionDigits: 2 });
 }
 
 function getErrorMessage(error: unknown) {
@@ -4197,6 +4225,37 @@ function App() {
                 </p>
               ) : null}
 
+              {miningMetrics.reserveSummary ? (
+                <div className="resource-supply-summary">
+                  <p>
+                    On-chain total mined: <strong>{formatIntegerString(miningMetrics.reserveSummary.totalEstimatedReserves)}</strong>
+                  </p>
+                  <p>
+                    На кошельках игроков: <strong>{formatTokenAmount(miningMetrics.reserveSummary.totalPlayerWalletBalance)}</strong>
+                    {" | "}
+                    На кошельках разработчиков: <strong>{formatTokenAmount(miningMetrics.reserveSummary.totalDeveloperWalletBalance)}</strong>
+                  </p>
+                  <p>
+                    Покрытие mint-картой: <strong>{miningMetrics.reserveSummary.walletCoverageResources}</strong> из <strong>{miningMetrics.resources.length}</strong>
+                    {" | "}
+                    Игроков в скане: <strong>{miningMetrics.reserveSummary.playerWalletsScanned}</strong>
+                    {" | "}
+                    Dev-кошельков: <strong>{miningMetrics.reserveSummary.developerWalletsScanned}</strong>
+                  </p>
+                  <div className="resource-supply-badges">
+                    <span className="reserve-signal-badge deficit-risk">
+                      Дефицит: {miningMetrics.reserveSummary.deficitRiskCount}
+                    </span>
+                    <span className="reserve-signal-badge balanced">
+                      Баланс: {miningMetrics.reserveSummary.balancedCount}
+                    </span>
+                    <span className="reserve-signal-badge surplus-risk">
+                      Избыток: {miningMetrics.reserveSummary.surplusRiskCount}
+                    </span>
+                  </div>
+                </div>
+              ) : null}
+
               {miningMetrics.resources && miningMetrics.resources.length > 0 ? (
                 <div className="resources-table">
                   <table>
@@ -4205,7 +4264,10 @@ function App() {
                         <th>Ресурс</th>
                         <th>Всего Флотов</th>
                         <th>Total Mined</th>
+                        <th>У Игроков</th>
+                        <th>У Разработчиков</th>
                         <th>За сутки</th>
+                        <th>Сигнал</th>
                         <th>Hardness</th>
                         <th>Avg Richness</th>
                         <th>MUD</th>
@@ -4223,7 +4285,14 @@ function App() {
                           <td>
                             {formatIntegerString(resource.totalMined)}
                           </td>
+                          <td>{formatTokenAmount(resource.playerWalletBalance)}</td>
+                          <td>{formatTokenAmount(resource.developerWalletBalance)}</td>
                           <td>{formatIntegerString(resource.dailyMined)}</td>
+                          <td>
+                            <span className={`reserve-signal-badge ${resource.reserveSignal || "balanced"}`}>
+                              {formatReserveSignal(resource.reserveSignal)}
+                            </span>
+                          </td>
                           <td>{resource.resourceHardness ?? "-"}</td>
                           <td>
                             {resource.averageSystemRichness != null

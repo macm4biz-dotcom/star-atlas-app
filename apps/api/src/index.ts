@@ -1297,8 +1297,26 @@ type MiningResourceData = {
   updatedAt: string;
   totalMined?: string;
   dailyMined?: string;
+  estimatedPlayerReserves?: string;
+  resourceMint?: string;
+  playerWalletBalance?: number;
+  developerWalletBalance?: number;
+  reserveSignal?: "deficit-risk" | "balanced" | "surplus-risk";
+  reserveSignalScore?: number;
   resourceHardness?: number;
   averageSystemRichness?: number;
+};
+
+type BridgeResourceReserveSummary = {
+  totalEstimatedReserves: string;
+  totalPlayerWalletBalance: number;
+  totalDeveloperWalletBalance: number;
+  walletCoverageResources: number;
+  playerWalletsScanned: number;
+  developerWalletsScanned: number;
+  deficitRiskCount: number;
+  balancedCount: number;
+  surplusRiskCount: number;
 };
 
 type BridgeMiningMetrics = {
@@ -1306,6 +1324,7 @@ type BridgeMiningMetrics = {
   resetAt: string; // UTC midnight when counters reset
   updatedAt: string;
   source?: "sage-onchain" | "rydn-fallback" | "empty";
+  reserveSummary?: BridgeResourceReserveSummary;
 };
 
 type BridgeCraftCatalogGroup = "compound-material" | "component";
@@ -1406,6 +1425,142 @@ function getUtcDayEndTtlMs(date: Date) {
   // Keep baseline available through the next UTC day to survive delayed requests and restarts.
   const nextReset = getNextUtcReset(date);
   return Math.max(1, nextReset.getTime() - date.getTime() + 24 * 60 * 60 * 1000);
+}
+
+function estimateReserveSignal(params: {
+  totalFleets: number;
+  dailyMined: bigint;
+  resourceHardness?: number;
+  averageSystemRichness?: number;
+}): { signal: "deficit-risk" | "balanced" | "surplus-risk"; score: number } {
+  const fleetsScale = Math.log10(Math.max(1, params.totalFleets) + 1) + 1;
+  const dailyMinedDigits = params.dailyMined > 0n ? params.dailyMined.toString().length : 1;
+  const hardness = params.resourceHardness ?? 100;
+  const richness = Math.max(1, params.averageSystemRichness ?? 100);
+
+  const score = Number(((hardness / richness) * ((fleetsScale * 3) / dailyMinedDigits)).toFixed(2));
+
+  if (score > 1.15) {
+    return { signal: "deficit-risk", score };
+  }
+
+  if (score < 0.75) {
+    return { signal: "surplus-risk", score };
+  }
+
+  return { signal: "balanced", score };
+}
+
+function normalizeResourceMintKey(value: string) {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "");
+}
+
+function parseBridgeResourceMintMap(raw: string | undefined) {
+  const map = new Map<string, string>();
+  const source = String(raw || "").trim();
+
+  if (!source) {
+    return map;
+  }
+
+  for (const chunk of source.split(/[;\n,]/)) {
+    const pair = chunk.trim();
+    if (!pair) continue;
+
+    const separatorIndex = pair.indexOf("=");
+    if (separatorIndex <= 0) continue;
+
+    const resource = normalizeResourceMintKey(pair.slice(0, separatorIndex));
+    const mint = pair.slice(separatorIndex + 1).trim();
+    if (!resource || !mint) continue;
+
+    try {
+      const normalizedMint = new PublicKey(mint).toBase58();
+      map.set(resource, normalizedMint);
+    } catch {
+      continue;
+    }
+  }
+
+  return map;
+}
+
+function resolveBridgeResourceWalletGroups() {
+  const configuredDevelopers = parseWalletAllowlist(
+    process.env.BRIDGE_RESOURCE_DEVELOPER_WALLETS,
+    Array.from(WALLET_AUTH_ADMIN_WALLETS),
+  )
+    .map((wallet) => normalizeWalletAddress(wallet))
+    .filter((wallet) => isValidSolanaWallet(wallet));
+  const developerWalletSet = new Set(configuredDevelopers);
+
+  const configuredPlayers = parseWalletAllowlist(
+    process.env.BRIDGE_RESOURCE_PLAYER_WALLETS,
+    [],
+  )
+    .map((wallet) => normalizeWalletAddress(wallet))
+    .filter((wallet) => isValidSolanaWallet(wallet));
+
+  const fallbackPlayers = walletAuthUsersStore
+    .map((entry) => normalizeWalletAddress(entry.wallet))
+    .filter((wallet) => isValidSolanaWallet(wallet));
+
+  const playerWalletSet = new Set(
+    (configuredPlayers.length > 0 ? configuredPlayers : fallbackPlayers).filter(
+      (wallet) => !developerWalletSet.has(wallet),
+    ),
+  );
+
+  return {
+    playerWallets: Array.from(playerWalletSet),
+    developerWallets: Array.from(developerWalletSet),
+  };
+}
+
+async function readTokenBalancesByWalletsAndMints(
+  connection: Connection,
+  wallets: string[],
+  mints: Set<string>,
+) {
+  const balancesByMint = new Map<string, number>();
+
+  if (!wallets.length || !mints.size) {
+    return balancesByMint;
+  }
+
+  for (const wallet of wallets) {
+    try {
+      const publicKey = new PublicKey(wallet);
+      const tokenAccounts = await connection.getParsedTokenAccountsByOwner(publicKey, {
+        programId: SPL_TOKEN_PROGRAM,
+      });
+
+      for (const account of tokenAccounts.value) {
+        const parsedInfo = account.account.data.parsed?.info;
+        const mint = parsedInfo?.mint as string | undefined;
+        const tokenAmount = parsedInfo?.tokenAmount;
+
+        if (!mint || !mints.has(mint) || !tokenAmount) {
+          continue;
+        }
+
+        const amount = Number(tokenAmount.uiAmount ?? tokenAmount.uiAmountString ?? 0);
+        if (!Number.isFinite(amount) || amount <= 0) {
+          continue;
+        }
+
+        const current = balancesByMint.get(mint) || 0;
+        balancesByMint.set(mint, Number((current + amount).toFixed(9)));
+      }
+    } catch (error) {
+      app.log.warn({ wallet, error: String(error) }, "Failed to read token accounts for wallet");
+    }
+  }
+
+  return balancesByMint;
 }
 
 function resolveSageFleetFaction(value: unknown): BridgeFaction | null {
@@ -1735,11 +1890,40 @@ async function fetchSageMiningMetricsFromRPC(): Promise<BridgeMiningMetrics> {
       await writeMiningDailyBaseline(baseline, now);
     }
 
+    let totalEstimatedReserves = 0n;
+    let totalPlayerWalletBalance = 0;
+    let totalDeveloperWalletBalance = 0;
+    let walletCoverageResources = 0;
+    let deficitRiskCount = 0;
+    let balancedCount = 0;
+    let surplusRiskCount = 0;
+
     const minedResources: MiningResourceData[] = Array.from(aggregatedResources.entries())
       .map(([resource, data]) => {
         const totalMined = data.totalMined;
         const baselineTotal = parseIntegerLike(baseline?.resources?.[resource]?.totalMined) || 0n;
         const dailyMined = totalMined >= baselineTotal ? totalMined - baselineTotal : 0n;
+        const averageSystemRichness =
+          data.systemRichnessSamples > 0
+            ? Number(
+                (data.totalSystemRichness / data.systemRichnessSamples).toFixed(2),
+              )
+            : undefined;
+        const reserveSignal = estimateReserveSignal({
+          totalFleets:
+            (fleetCountsByResource.get(resource)?.MUD || 0) +
+            (fleetCountsByResource.get(resource)?.ONI || 0) +
+            (fleetCountsByResource.get(resource)?.USTUR || 0) ||
+            data.totalFleets,
+          dailyMined,
+          resourceHardness: data.resourceHardness,
+          averageSystemRichness,
+        });
+
+        totalEstimatedReserves += totalMined;
+        if (reserveSignal.signal === "deficit-risk") deficitRiskCount += 1;
+        else if (reserveSignal.signal === "surplus-risk") surplusRiskCount += 1;
+        else balancedCount += 1;
 
         return {
           resource,
@@ -1752,17 +1936,54 @@ async function fetchSageMiningMetricsFromRPC(): Promise<BridgeMiningMetrics> {
           updatedAt: now.toISOString(),
           totalMined: totalMined.toString(),
           dailyMined: dailyMined.toString(),
+          estimatedPlayerReserves: totalMined.toString(),
+          reserveSignal: reserveSignal.signal,
+          reserveSignalScore: reserveSignal.score,
           resourceHardness: data.resourceHardness,
-          averageSystemRichness:
-            data.systemRichnessSamples > 0
-              ? Number(
-                  (data.totalSystemRichness / data.systemRichnessSamples).toFixed(2),
-                )
-              : undefined,
+          averageSystemRichness,
         };
       })
       .filter((r) => r.totalFleets > 0)
       .sort((a, b) => b.totalFleets - a.totalFleets);
+
+    const bridgeResourceMintMap = parseBridgeResourceMintMap(process.env.BRIDGE_RESOURCE_MINTS);
+    const resourceMintByName = new Map<string, string>();
+    for (const resource of minedResources) {
+      const mint = bridgeResourceMintMap.get(normalizeResourceMintKey(resource.resource));
+      if (mint) {
+        resourceMintByName.set(resource.resource, mint);
+      }
+    }
+
+    const trackedMints = new Set(resourceMintByName.values());
+    const { playerWallets, developerWallets } = resolveBridgeResourceWalletGroups();
+    let playerBalancesByMint = new Map<string, number>();
+    let developerBalancesByMint = new Map<string, number>();
+
+    if (trackedMints.size > 0) {
+      [playerBalancesByMint, developerBalancesByMint] = await Promise.all([
+        readTokenBalancesByWalletsAndMints(connection, playerWallets, trackedMints),
+        readTokenBalancesByWalletsAndMints(connection, developerWallets, trackedMints),
+      ]);
+    }
+
+    for (const resource of minedResources) {
+      const mint = resourceMintByName.get(resource.resource);
+      if (!mint) {
+        continue;
+      }
+
+      const playerBalance = Number((playerBalancesByMint.get(mint) || 0).toFixed(6));
+      const developerBalance = Number((developerBalancesByMint.get(mint) || 0).toFixed(6));
+
+      resource.resourceMint = mint;
+      resource.playerWalletBalance = playerBalance;
+      resource.developerWalletBalance = developerBalance;
+
+      totalPlayerWalletBalance += playerBalance;
+      totalDeveloperWalletBalance += developerBalance;
+      walletCoverageResources += 1;
+    }
 
     miningDailyBaselineMemory = baseline;
     if (SHARED_CACHE_ENABLED) {
@@ -1780,6 +2001,17 @@ async function fetchSageMiningMetricsFromRPC(): Promise<BridgeMiningMetrics> {
       resetAt: nextReset.toISOString(),
       updatedAt: now.toISOString(),
       source: "sage-onchain",
+      reserveSummary: {
+        totalEstimatedReserves: totalEstimatedReserves.toString(),
+        totalPlayerWalletBalance: Number(totalPlayerWalletBalance.toFixed(6)),
+        totalDeveloperWalletBalance: Number(totalDeveloperWalletBalance.toFixed(6)),
+        walletCoverageResources,
+        playerWalletsScanned: playerWallets.length,
+        developerWalletsScanned: developerWallets.length,
+        deficitRiskCount,
+        balancedCount,
+        surplusRiskCount,
+      },
     };
 
     sageOnchainCache = { data: result, fetchedAt: Date.now() };
@@ -1847,11 +2079,12 @@ async function fetchRydnMiningMetrics(): Promise<BridgeMiningMetrics> {
     const nextReset = getNextUtcReset(now);
 
     const resources: MiningResourceData[] = Array.from(resourceMap.entries())
-      .map(([resource, data]) => ({
+      .map(([resource, data]): MiningResourceData => ({
         resource,
         totalFleets: data.total,
         byFaction: data.byFaction,
         updatedAt: now.toISOString(),
+        reserveSignal: "balanced",
       }))
       .filter((resource) => resource.totalFleets > 0)
       .sort((left, right) => right.totalFleets - left.totalFleets);
@@ -1867,6 +2100,7 @@ async function fetchRydnMiningMetrics(): Promise<BridgeMiningMetrics> {
           USTUR: unmappedFleetTotal - perFaction * 2,
         },
         updatedAt: now.toISOString(),
+        reserveSignal: "balanced",
       });
     }
 
@@ -1875,6 +2109,17 @@ async function fetchRydnMiningMetrics(): Promise<BridgeMiningMetrics> {
       resetAt: nextReset.toISOString(),
       updatedAt: now.toISOString(),
       source: "rydn-fallback",
+      reserveSummary: {
+        totalEstimatedReserves: "0",
+        totalPlayerWalletBalance: 0,
+        totalDeveloperWalletBalance: 0,
+        walletCoverageResources: 0,
+        playerWalletsScanned: 0,
+        developerWalletsScanned: 0,
+        deficitRiskCount: 0,
+        balancedCount: resources.length,
+        surplusRiskCount: 0,
+      },
     };
   } catch (error) {
     app.log.warn(
@@ -1902,6 +2147,17 @@ function buildEmptyMiningMetrics(): BridgeMiningMetrics {
     resetAt: nextReset.toISOString(),
     updatedAt: now.toISOString(),
     source: "empty",
+    reserveSummary: {
+      totalEstimatedReserves: "0",
+      totalPlayerWalletBalance: 0,
+      totalDeveloperWalletBalance: 0,
+      walletCoverageResources: 0,
+      playerWalletsScanned: 0,
+      developerWalletsScanned: 0,
+      deficitRiskCount: 0,
+      balancedCount: 0,
+      surplusRiskCount: 0,
+    },
   };
 }
 
