@@ -7310,13 +7310,7 @@ type WhalesSnapshot = {
   polisTrades: WhaleTrade[];
 };
 
-let whalesCache: { data: WhalesSnapshot; expiresAt: number } | null = null;
-// Invalidate at next UTC midnight
-function nextUtcMidnightMs() {
-  const now = new Date();
-  const midnight = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1));
-  return midnight.getTime();
-}
+let whalesCache: { utcDateKey: string; data: WhalesSnapshot; expiresAt: number } | null = null;
 
 async function fetchTopHolders(mint: string, connection: Connection): Promise<WhaleHolder[]> {
   try {
@@ -7417,13 +7411,18 @@ async function buildWhalesSnapshot(): Promise<WhalesSnapshot> {
 }
 
 app.get("/api/whales", async (_request, reply) => {
-  const now = Date.now();
-  if (whalesCache && whalesCache.expiresAt > now) {
+  const now = new Date();
+  const utcDateKey = formatUtcDateKey(now);
+  if (whalesCache && whalesCache.utcDateKey === utcDateKey && whalesCache.expiresAt > now.getTime()) {
     return whalesCache.data;
   }
   try {
     const data = await buildWhalesSnapshot();
-    whalesCache = { data, expiresAt: Math.min(now + 60 * 60 * 1000, nextUtcMidnightMs()) };
+    whalesCache = {
+      utcDateKey,
+      data,
+      expiresAt: getNextUtcReset(now).getTime(),
+    };
     return data;
   } catch (err) {
     return reply.code(502).send({ error: err instanceof Error ? err.message : "Failed to fetch whales data" });
