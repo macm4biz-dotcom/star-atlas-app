@@ -1,0 +1,29 @@
+{
+  "snapshots": [
+    {
+      "ts": "2026-05-01",
+      "produced": {"food": 1000, "fuel": 700, "ammo": 450, "toolkits": 150},
+      "consumed": {"food": 800, "fuel": 600, "ammo": 500, "toolkits": 120}
+    },
+    {
+      "ts": "2026-05-02",
+      "produced": {"food": 1200, "fuel": 760, "ammo": 470, "toolkits": 160},
+      "consumed": {"food": 900, "fuel": 650, "ammo": 520, "toolkits": 130}
+    },
+    {
+      "ts": "2026-05-03",
+      "produced": {"food": 900, "fuel": 710, "ammo": 430, "toolkits": 180},
+      "consumed": {"food": 950, "fuel": 690, "ammo": 460, "toolkits": 140}
+    },
+    {
+      "ts": "2026-05-04",
+      "produced": {"food": 1500, "fuel": 880, "ammo": 600, "toolkits": 210},
+      "consumed": {"food": 1100, "fuel": 720, "ammo": 540, "toolkits": 160}
+    },
+    {
+      "ts": "2026-05-05",
+      "produced": {"food": 1300, "fuel": 840, "ammo": 560, "toolkits": 220},
+      "consumed": {"food": 1000, "fuel": 760, "ammo": 530, "toolkits": 170}
+    }
+  ]
+}
