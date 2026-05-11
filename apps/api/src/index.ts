@@ -7503,8 +7503,31 @@ async function buildStarAtlasTickerSnapshot(now: Date): Promise<StarAtlasTickerS
     fetchCoingecko24hTrend("star-atlas-dao"),
   ]);
 
-  const atlasPrice = Number(ticker["star-atlas"]?.priceUsd || 0);
-  const polisPrice = Number(ticker["star-atlas-dao"]?.priceUsd || 0);
+  const atlasPriceFromTicker = Number(ticker["star-atlas"]?.priceUsd || 0);
+  const polisPriceFromTicker = Number(ticker["star-atlas-dao"]?.priceUsd || 0);
+  const atlasPriceFromTrend = atlasTrend.length ? Number(atlasTrend[atlasTrend.length - 1] || 0) : 0;
+  const polisPriceFromTrend = polisTrend.length ? Number(polisTrend[polisTrend.length - 1] || 0) : 0;
+  const atlasPrice = atlasPriceFromTicker > 0 ? atlasPriceFromTicker : atlasPriceFromTrend;
+  const polisPrice = polisPriceFromTicker > 0 ? polisPriceFromTicker : polisPriceFromTrend;
+
+  const calcChangeFromTrend = (points: number[]) => {
+    if (points.length < 2) return null;
+    const first = Number(points[0] || 0);
+    const last = Number(points[points.length - 1] || 0);
+    if (!Number.isFinite(first) || !Number.isFinite(last) || first <= 0) return null;
+    return ((last - first) / first) * 100;
+  };
+
+  const atlasChangeFromTicker =
+    typeof ticker["star-atlas"]?.change24hPct === "number"
+      ? Number(ticker["star-atlas"]?.change24hPct)
+      : null;
+  const polisChangeFromTicker =
+    typeof ticker["star-atlas-dao"]?.change24hPct === "number"
+      ? Number(ticker["star-atlas-dao"]?.change24hPct)
+      : null;
+  const atlasChange = atlasChangeFromTicker ?? calcChangeFromTrend(atlasTrend);
+  const polisChange = polisChangeFromTicker ?? calcChangeFromTrend(polisTrend);
   const zincTrend = Array.from({ length: 24 }, (_item, index) => 1 + index * 0.001);
 
   return {
@@ -7522,19 +7545,13 @@ async function buildStarAtlasTickerSnapshot(now: Date): Promise<StarAtlasTickerS
       {
         symbol: "ATLAS",
         priceUsd: atlasPrice,
-        change24hPct:
-          typeof ticker["star-atlas"]?.change24hPct === "number"
-            ? Number(ticker["star-atlas"]?.change24hPct)
-            : null,
+        change24hPct: atlasChange,
         trend24h: atlasTrend.length > 1 ? atlasTrend : [atlasPrice, atlasPrice],
       },
       {
         symbol: "POLIS",
         priceUsd: polisPrice,
-        change24hPct:
-          typeof ticker["star-atlas-dao"]?.change24hPct === "number"
-            ? Number(ticker["star-atlas-dao"]?.change24hPct)
-            : null,
+        change24hPct: polisChange,
         trend24h: polisTrend.length > 1 ? polisTrend : [polisPrice, polisPrice],
       },
     ],
