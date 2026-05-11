@@ -311,6 +311,7 @@ type R4ResourceMetrics = {
   totalCreated: number;
   totalCreatedIsLowerBound: boolean;
   createdToday: number;
+  consumedToday: number;
   totalConsumed: number;
   playerBalance: number;
   playerBalanceKnown: boolean;
@@ -4816,6 +4817,7 @@ function App() {
                         <th>Ресурс</th>
                         <th>Создано всего</th>
                         <th>Создано сегодня</th>
+                        <th>Сожжено сегодня</th>
                         <th>Потреблено</th>
                         <th>Остаток</th>
                         <th>Расход 24ч</th>
@@ -4860,6 +4862,12 @@ function App() {
                               formatCompactTokenAmount(resource.createdToday),
                               formatTokenAmount(resource.createdToday),
                             )}</td>
+                            <td className="metric-compact">{resource.consumedToday > 0
+                              ? renderMetricWithTooltip(
+                                formatCompactTokenAmount(resource.consumedToday),
+                                formatTokenAmount(resource.consumedToday),
+                              )
+                              : "-"}</td>
                             <td className="metric-compact">{renderMetricWithTooltip(
                               formatCompactTokenAmount(resource.totalConsumed),
                               formatTokenAmount(resource.totalConsumed),

@@ -1375,7 +1375,8 @@ type R4ResourceMetrics = {
   mintSource?: "r4-env" | "bridge-env" | "staratlas-market" | "unresolved";
   totalCreated: number;  // всего создано за всё время
   totalCreatedIsLowerBound: boolean;
-  createdToday: number;  // создано за сегодня
+  createdToday: number;  // создано за сегодня (из Helius MINT)
+  consumedToday: number; // сожжено за сегодня (из Helius BURN)
   totalConsumed: number;  // всего потреблено
   playerBalance: number;
   playerBalanceKnown: boolean;
@@ -1852,6 +1853,191 @@ async function appendR4BalanceSnapshot(
   await writeR4BalanceHistory(nextHistory);
   return nextHistory;
 }
+
+// ─── Helius R4 Activity Scanner ──────────────────────────────────────────────
+
+const HELIUS_API_KEY = (process.env.HELIUS_API_KEY || "").trim();
+const R4_HELIUS_SCOPE = "r4_helius_v1";
+const R4_HELIUS_TTL_MS = 48 * 60 * 60 * 1000; // 48h
+
+interface R4ResourceActivity {
+  burned: number;
+  minted: number;
+}
+
+interface R4DailyActivity {
+  dateKey: string;
+  food: R4ResourceActivity;
+  ammunition: R4ResourceActivity;
+  toolkit: R4ResourceActivity;
+  fuel: R4ResourceActivity;
+  lastScanAt: string;
+}
+
+interface HeliusTokenTransfer {
+  fromUserAccount?: string;
+  toUserAccount?: string;
+  mint: string;
+  tokenAmount: number;
+}
+
+interface HeliusTxRecord {
+  signature: string;
+  timestamp: number;
+  tokenTransfers?: HeliusTokenTransfer[];
+}
+
+async function readR4DailyActivity(dateKey: string): Promise<R4DailyActivity | null> {
+  return readSharedCacheString<R4DailyActivity>(R4_HELIUS_SCOPE, `activity:${dateKey}`);
+}
+
+async function writeR4DailyActivity(activity: R4DailyActivity): Promise<void> {
+  await writeSharedCacheString(R4_HELIUS_SCOPE, `activity:${activity.dateKey}`, activity, R4_HELIUS_TTL_MS);
+}
+
+async function readR4ScanCursor(resourceKey: R4ResourceKey, dateKey: string): Promise<string | null> {
+  return readSharedCacheString<string>(R4_HELIUS_SCOPE, `cursor:${resourceKey}:${dateKey}`);
+}
+
+async function writeR4ScanCursor(resourceKey: R4ResourceKey, dateKey: string, cursor: string): Promise<void> {
+  await writeSharedCacheString(R4_HELIUS_SCOPE, `cursor:${resourceKey}:${dateKey}`, cursor, R4_HELIUS_TTL_MS);
+}
+
+/**
+ * Incrementally scan Helius Enhanced Transactions API for a single R4 mint.
+ * Returns updated accumulated totals + the newest signature found (new cursor).
+ * Pages backward in time from newest, stopping at cursor or UTC midnight.
+ */
+async function scanR4ResourceIncremental(
+  resourceKey: R4ResourceKey,
+  mint: string,
+  dateKey: string,
+  midnightTs: number,
+  existingActivity: R4ResourceActivity,
+  maxPages = 50,
+): Promise<{ activity: R4ResourceActivity; newCursor: string | null }> {
+  if (!HELIUS_API_KEY) return { activity: existingActivity, newCursor: null };
+
+  const cursor = await readR4ScanCursor(resourceKey, dateKey);
+
+  let burned = existingActivity.burned;
+  let minted = existingActivity.minted;
+  let newCursor: string | null = null;
+  let beforeSig: string | null = null;
+  let done = false;
+  let pages = 0;
+
+  while (!done && pages < maxPages) {
+    const url = new URL(`https://api.helius.xyz/v0/addresses/${mint}/transactions`);
+    url.searchParams.set("api-key", HELIUS_API_KEY);
+    url.searchParams.set("limit", "100");
+    if (beforeSig) url.searchParams.set("before", beforeSig);
+
+    const data = await fetchJsonWithTimeout(url.toString(), 20_000);
+    if (!Array.isArray(data) || data.length === 0) break;
+
+    const txs = data as HeliusTxRecord[];
+    pages += 1;
+
+    for (const tx of txs) {
+      // First (newest) signature on first page becomes the new cursor
+      if (!newCursor) newCursor = tx.signature;
+
+      // Stop when we reach the signature we processed last time
+      if (cursor && tx.signature === cursor) {
+        done = true;
+        break;
+      }
+
+      // Stop when we reach yesterday (before UTC midnight)
+      if (tx.timestamp < midnightTs) {
+        done = true;
+        break;
+      }
+
+      // Accumulate burns and mints for this specific token
+      for (const t of tx.tokenTransfers ?? []) {
+        if (t.mint !== mint) continue;
+        const amount = Number(t.tokenAmount) || 0;
+        if (amount <= 0) continue;
+        if (!t.toUserAccount) {
+          burned += amount; // BURN: tokens destroyed, toAccount is empty
+        } else if (!t.fromUserAccount) {
+          minted += amount; // MINT: tokens created, fromAccount is empty
+        }
+      }
+    }
+
+    if (!done) {
+      const last = txs[txs.length - 1];
+      beforeSig = last.signature;
+      if (last.timestamp < midnightTs) done = true;
+    }
+  }
+
+  return { activity: { burned, minted }, newCursor };
+}
+
+let r4ScanInFlight = false;
+
+/**
+ * Background job: scan all 4 R4 mints incrementally and update Upstash daily totals.
+ * Safe to call concurrently (guarded by in-flight flag).
+ */
+async function scanR4MintBurnActivity(): Promise<void> {
+  if (!HELIUS_API_KEY || !SHARED_CACHE_ENABLED) return;
+  if (r4ScanInFlight) return;
+
+  r4ScanInFlight = true;
+  try {
+    const now = new Date();
+    const dateKey = formatUtcDateKey(now);
+    const midnightTs = new Date(`${dateKey}T00:00:00Z`).getTime() / 1000;
+
+    const existing = await readR4DailyActivity(dateKey);
+    const zero: R4ResourceActivity = { burned: 0, minted: 0 };
+    const current: Record<R4ResourceKey, R4ResourceActivity> = {
+      food: existing?.food ?? zero,
+      ammunition: existing?.ammunition ?? zero,
+      toolkit: existing?.toolkit ?? zero,
+      fuel: existing?.fuel ?? zero,
+    };
+
+    // Scan all 4 mints in parallel (each handles its own resource)
+    const mintEntries = Object.entries(R4_STAR_ATLAS_DEFAULT_MINTS) as [R4ResourceKey, string][];
+    const results = await Promise.allSettled(
+      mintEntries.map(([key, mint]) =>
+        scanR4ResourceIncremental(key, mint, dateKey, midnightTs, current[key]),
+      ),
+    );
+
+    // Write updated cursors and merge results
+    const updated: Record<R4ResourceKey, R4ResourceActivity> = { ...current };
+    await Promise.all(
+      mintEntries.map(async ([key], idx) => {
+        const result = results[idx];
+        if (result.status === "fulfilled" && result.value.newCursor) {
+          updated[key] = result.value.activity;
+          await writeR4ScanCursor(key, dateKey, result.value.newCursor);
+        }
+      }),
+    );
+
+    const activity: R4DailyActivity = {
+      dateKey,
+      food: updated.food,
+      ammunition: updated.ammunition,
+      toolkit: updated.toolkit,
+      fuel: updated.fuel,
+      lastScanAt: now.toISOString(),
+    };
+    await writeR4DailyActivity(activity);
+  } finally {
+    r4ScanInFlight = false;
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 
 function calculateR4OrderVolumes(aliases: string[]) {
   const normalizedAliases = aliases.map((alias) => alias.toLowerCase());
@@ -2886,6 +3072,12 @@ async function fetchBridgeR4Metrics(): Promise<BridgeR4Metrics> {
   const utcDateKey = formatUtcDateKey(now);
   const connection = new Connection(SOLANA_RPC_URL, "confirmed");
 
+  // Запускаем инкрементальный скан в фоне (fire-and-forget) при каждом запросе
+  void scanR4MintBurnActivity().catch(() => undefined);
+
+  // Загружаем накопленные суточные данные о сжигании/создании из Upstash
+  const r4DailyActivity = await readR4DailyActivity(utcDateKey);
+
   const r4MintMap = parseBridgeResourceMintMap(process.env.BRIDGE_R4_RESOURCE_MINTS);
   const bridgeMintMap = parseBridgeResourceMintMap(process.env.BRIDGE_RESOURCE_MINTS);
 
@@ -3040,6 +3232,8 @@ async function fetchBridgeR4Metrics(): Promise<BridgeR4Metrics> {
     }
     // createdToday будет пересчитан ниже из on-chain снимков (если доступны)
     let createdToday = Number((createdByDate.get(utcDateKey) || 0).toFixed(6)); // fallback: seed
+    // consumedToday из Helius BURN-транзакций (если доступны)
+    let consumedToday = 0;
 
     const orderbook = orderbookByResource.get(resource.key);
     const marketDerivedPriceUsd =
@@ -3060,12 +3254,27 @@ async function fetchBridgeR4Metrics(): Promise<BridgeR4Metrics> {
           snapshots: [],
         };
 
-    // Пересчитать createdToday из реальной разницы on-chain предложения vs вчера
+    // Пересчитать createdToday и consumedToday из on-chain / Helius данных
     if (hasOnchainMintData) {
-      const yesterdayDateKey = formatUtcDateKey(new Date(now.getTime() - 86_400_000));
-      const yesterdaySnap = balanceHistory.snapshots.find((s) => s.utcDateKey === yesterdayDateKey);
-      if (yesterdaySnap) {
-        createdToday = Number(Math.max(0, totalSupply - yesterdaySnap.totalSupply).toFixed(6));
+      // Helius: burned = реальный расход за сегодня
+      const heliusActivity = r4DailyActivity?.[resource.key as R4ResourceKey];
+      if (heliusActivity && heliusActivity.burned > 0) {
+        consumedToday = Number(heliusActivity.burned.toFixed(6));
+      }
+      // Helius: minted = реально создано сегодня
+      if (heliusActivity && heliusActivity.minted > 0) {
+        createdToday = Number(heliusActivity.minted.toFixed(6));
+      } else {
+        // Fallback: разница totalSupply vs вчерашний снимок (net = minted - burned)
+        const yesterdayDateKey = formatUtcDateKey(new Date(now.getTime() - 86_400_000));
+        const yesterdaySnap = balanceHistory.snapshots.find((s) => s.utcDateKey === yesterdayDateKey);
+        if (yesterdaySnap) {
+          const netChange = totalSupply - yesterdaySnap.totalSupply;
+          if (netChange > 0) {
+            // Больше создали чем сожгли: minted ≈ netChange + burned
+            createdToday = Number(Math.max(0, netChange + consumedToday).toFixed(6));
+          }
+        }
       }
     }
 
@@ -3138,6 +3347,7 @@ async function fetchBridgeR4Metrics(): Promise<BridgeR4Metrics> {
       totalCreated: Number(totalCreatedFinal.toFixed(6)),
       totalCreatedIsLowerBound,
       createdToday,
+      consumedToday,
       totalConsumed: consumedOverall,
       playerBalance,
       playerBalanceKnown,
@@ -7177,6 +7387,11 @@ const start = async () => {
     setInterval(() => {
       void syncNewsArchiveIfNeeded();
     }, 60 * 60 * 1000);
+    // Запускаем инкрементальный скан R4 BURN/MINT при старте и каждые 5 минут
+    void scanR4MintBurnActivity().catch(() => undefined);
+    setInterval(() => {
+      void scanR4MintBurnActivity().catch(() => undefined);
+    }, 5 * 60 * 1000);
   } catch (error) {
     app.log.error(error);
     process.exit(1);
