@@ -580,14 +580,34 @@ function formatTokenAmount(value?: number) {
   return value.toLocaleString("ru-RU", { maximumFractionDigits: 2 });
 }
 
+function formatCompactTokenAmount(value?: number) {
+  if (value == null || !Number.isFinite(value)) return "-";
+
+  const abs = Math.abs(value);
+  if (abs >= 1_000_000_000_000) {
+    return `${(value / 1_000_000_000_000).toFixed(1)}T`;
+  }
+  if (abs >= 1_000_000_000) {
+    return `${(value / 1_000_000_000).toFixed(1)}B`;
+  }
+  if (abs >= 1_000_000) {
+    return `${(value / 1_000_000).toFixed(1)}M`;
+  }
+  if (abs >= 1_000) {
+    return `${(value / 1_000).toFixed(1)}K`;
+  }
+
+  return formatTokenAmount(value);
+}
+
 function formatTokenAmountWithCoverage(value: number | undefined, scannedWallets: number) {
   if (value != null && Number.isFinite(value)) {
-    return formatTokenAmount(value);
+    return formatCompactTokenAmount(value);
   }
   if (scannedWallets <= 0) {
     return "-";
   }
-  return formatTokenAmount(value);
+  return formatCompactTokenAmount(value);
 }
 
 function formatMintShort(mint?: string) {
@@ -4392,9 +4412,9 @@ function App() {
                     On-chain total mined: <strong>{formatIntegerString(miningMetrics.reserveSummary.totalEstimatedReserves)}</strong>
                   </p>
                   <p>
-                    На кошельках игроков: <strong>{formatTokenAmount(miningMetrics.reserveSummary.totalPlayerWalletBalance)}</strong>
+                    На кошельках игроков: <strong title={formatTokenAmount(miningMetrics.reserveSummary.totalPlayerWalletBalance)}>{formatCompactTokenAmount(miningMetrics.reserveSummary.totalPlayerWalletBalance)}</strong>
                     {" | "}
-                    На кошельках разработчиков: <strong>{formatTokenAmount(miningMetrics.reserveSummary.totalDeveloperWalletBalance)}</strong>
+                    На кошельках разработчиков: <strong title={formatTokenAmount(miningMetrics.reserveSummary.totalDeveloperWalletBalance)}>{formatCompactTokenAmount(miningMetrics.reserveSummary.totalDeveloperWalletBalance)}</strong>
                   </p>
                   <p>
                     Покрытие mint-картой: <strong>{miningMetrics.reserveSummary.walletCoverageResources}</strong> из <strong>{miningMetrics.resources.length}</strong>
@@ -4480,7 +4500,7 @@ function App() {
                           <td title={formatIntegerString(resource.totalMined)} className="metric-compact">
                             {formatCompactIntegerString(resource.totalMined)}
                           </td>
-                          <td>
+                          <td title={formatTokenAmount(resource.playerWalletBalance)} className="metric-compact">
                             {formatTokenAmountWithCoverage(
                               resource.playerWalletBalance,
                               miningMetrics.reserveSummary?.playerWalletsScanned || 0,
