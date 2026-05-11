@@ -4791,7 +4791,7 @@ function App() {
                           : "missing";
                         const solscanUrl = resource.mint
                           ? `https://solscan.io/token/${resource.mint}`
-                          : `https://solscan.io/search?query=${encodeURIComponent(resource.label)}`;
+                          : `https://solscan.io/?search=${encodeURIComponent(resource.key)}`;
 
                         return (
                           <tr key={resource.key} className={resource.mint ? "" : "resource-row-no-mint"}>
