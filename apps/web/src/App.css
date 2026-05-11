@@ -1639,6 +1639,11 @@ th {
   color: var(--text);
 }
 
+.resources-table td.metric-compact {
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
 .resources-table .resource-name {
   font-weight: 600;
   color: rgba(102, 242, 222, 0.85);

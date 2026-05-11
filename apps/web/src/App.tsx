@@ -544,6 +544,31 @@ function parseIntegerStringToBigInt(value?: string) {
   }
 }
 
+function formatCompactBigInt(value: bigint) {
+  const units = [
+    { pow: 12n, suffix: "T" },
+    { pow: 9n, suffix: "B" },
+    { pow: 6n, suffix: "M" },
+    { pow: 3n, suffix: "K" },
+  ];
+
+  for (const unit of units) {
+    const divisor = 10n ** unit.pow;
+    if (value >= divisor) {
+      const whole = value / divisor;
+      const frac = (value % divisor) * 10n / divisor;
+      return frac > 0n ? `${whole.toString()}.${frac.toString()}${unit.suffix}` : `${whole.toString()}${unit.suffix}`;
+    }
+  }
+
+  return value.toString();
+}
+
+function formatCompactIntegerString(value?: string) {
+  const parsed = parseIntegerStringToBigInt(value);
+  return formatCompactBigInt(parsed);
+}
+
 function formatReserveSignal(signal?: "deficit-risk" | "balanced" | "surplus-risk") {
   if (signal === "deficit-risk") return "Риск дефицита";
   if (signal === "surplus-risk") return "Риск избытка";
@@ -553,6 +578,13 @@ function formatReserveSignal(signal?: "deficit-risk" | "balanced" | "surplus-ris
 function formatTokenAmount(value?: number) {
   if (value == null || !Number.isFinite(value)) return "-";
   return value.toLocaleString("ru-RU", { maximumFractionDigits: 2 });
+}
+
+function formatTokenAmountWithCoverage(value: number | undefined, scannedWallets: number) {
+  if (scannedWallets <= 0) {
+    return "н/д";
+  }
+  return formatTokenAmount(value);
 }
 
 function formatMintShort(mint?: string) {
@@ -4365,6 +4397,7 @@ function App() {
                     Покрытие mint-картой: <strong>{miningMetrics.reserveSummary.walletCoverageResources}</strong> из <strong>{miningMetrics.resources.length}</strong>
                     {" | "}
                     Игроков в скане: <strong>{miningMetrics.reserveSummary.playerWalletsScanned}</strong>
+                    {miningMetrics.reserveSummary.playerWalletsScanned === 0 ? " (добавь BRIDGE_RESOURCE_PLAYER_WALLETS)" : ""}
                     {" | "}
                     Dev-кошельков: <strong>{miningMetrics.reserveSummary.developerWalletsScanned}</strong>
                   </p>
@@ -4443,12 +4476,24 @@ function App() {
                           <td className="resource-total">
                             <strong>{resource.totalFleets}</strong>
                           </td>
-                          <td>
-                            {formatIntegerString(resource.totalMined)}
+                          <td title={formatIntegerString(resource.totalMined)} className="metric-compact">
+                            {formatCompactIntegerString(resource.totalMined)}
                           </td>
-                          <td>{formatTokenAmount(resource.playerWalletBalance)}</td>
-                          <td>{formatTokenAmount(resource.developerWalletBalance)}</td>
-                          <td>{formatIntegerString(resource.dailyMined)}</td>
+                          <td>
+                            {formatTokenAmountWithCoverage(
+                              resource.playerWalletBalance,
+                              miningMetrics.reserveSummary?.playerWalletsScanned || 0,
+                            )}
+                          </td>
+                          <td>
+                            {formatTokenAmountWithCoverage(
+                              resource.developerWalletBalance,
+                              miningMetrics.reserveSummary?.developerWalletsScanned || 0,
+                            )}
+                          </td>
+                          <td title={formatIntegerString(resource.dailyMined)} className="metric-compact">
+                            {formatCompactIntegerString(resource.dailyMined)}
+                          </td>
                           <td>
                             <span className={`reserve-signal-badge ${resource.reserveSignal || "balanced"}`}>
                               {formatReserveSignal(resource.reserveSignal)}
