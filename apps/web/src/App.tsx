@@ -309,9 +309,11 @@ type R4ResourceMetrics = {
   mint?: string;
   mintSource?: "r4-env" | "bridge-env" | "unresolved";
   totalCreated: number;
+  totalCreatedIsLowerBound: boolean;
   createdToday: number;
   totalConsumed: number;
   playerBalance: number;
+  playerBalanceKnown: boolean;
   developerBalance: number;
   totalSupply: number;
   dailyConsumption: number;
@@ -342,6 +344,13 @@ type BridgeR4Metrics = {
     totalCreated: number;
     totalConsumed: number;
     totalPlayerBalance: number;
+    totalPlayerBalanceKnown: boolean;
+    totalCreatedIsLowerBound: boolean;
+    lowerBoundResourceCount: number;
+    createdCoverageDays: number;
+    createdCoverageStartUtcDate: string | null;
+    createdCoverageEndUtcDate: string | null;
+    productionHistorySource: string;
     deficitRiskCount: number;
     balancedCount: number;
     surplusRiskCount: number;
@@ -4747,6 +4756,16 @@ function App() {
             {r4Metrics ? (
               <>
                 <div className="r4-summary">
+                  {r4Metrics.summary.totalCreatedIsLowerBound ? (
+                    <p className="note">
+                      Важно: "Создано всего" сейчас показывается как нижняя граница (не all-time),
+                      покрытие истории: {r4Metrics.summary.createdCoverageDays} дн.
+                      {" "}
+                      ({r4Metrics.summary.createdCoverageStartUtcDate || "-"}
+                      {" "}→{" "}
+                      {r4Metrics.summary.createdCoverageEndUtcDate || "-"}).
+                    </p>
+                  ) : null}
                   <p>
                     Создано всего: <strong>{renderMetricWithTooltip(
                       formatCompactTokenAmount(r4Metrics.summary.totalCreated),
@@ -4758,10 +4777,12 @@ function App() {
                       formatTokenAmount(r4Metrics.summary.totalConsumed),
                     )}</strong>
                     {" | "}
-                    Остаток у игроков: <strong>{renderMetricWithTooltip(
-                      formatCompactTokenAmount(r4Metrics.summary.totalPlayerBalance),
-                      formatTokenAmount(r4Metrics.summary.totalPlayerBalance),
-                    )}</strong>
+                    Остаток у игроков: <strong>{r4Metrics.summary.totalPlayerBalanceKnown
+                      ? renderMetricWithTooltip(
+                        formatCompactTokenAmount(r4Metrics.summary.totalPlayerBalance),
+                        formatTokenAmount(r4Metrics.summary.totalPlayerBalance),
+                      )
+                      : "н/д"}</strong>
                   </p>
                   <p>
                     Дефицит: <strong>{r4Metrics.summary.deficitRiskCount}</strong>
@@ -4832,7 +4853,7 @@ function App() {
                             </td>
                             <td className="metric-compact">{renderMetricWithTooltip(
                               formatCompactTokenAmount(resource.totalCreated),
-                              formatTokenAmount(resource.totalCreated),
+                              `${formatTokenAmount(resource.totalCreated)}${resource.totalCreatedIsLowerBound ? " (нижняя граница)" : ""}`,
                             )}</td>
                             <td className="metric-compact">{renderMetricWithTooltip(
                               formatCompactTokenAmount(resource.createdToday),
@@ -4842,10 +4863,12 @@ function App() {
                               formatCompactTokenAmount(resource.totalConsumed),
                               formatTokenAmount(resource.totalConsumed),
                             )}</td>
-                            <td className="metric-compact">{renderMetricWithTooltip(
-                              formatCompactTokenAmount(resource.playerBalance),
-                              formatTokenAmount(resource.playerBalance),
-                            )}</td>
+                            <td className="metric-compact">{resource.playerBalanceKnown
+                              ? renderMetricWithTooltip(
+                                formatCompactTokenAmount(resource.playerBalance),
+                                formatTokenAmount(resource.playerBalance),
+                              )
+                              : "н/д"}</td>
                             <td className="metric-compact">{renderMetricWithTooltip(
                               formatCompactTokenAmount(resource.dailyConsumption),
                               formatTokenAmount(resource.dailyConsumption),

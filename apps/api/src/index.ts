@@ -1373,9 +1373,11 @@ type R4ResourceMetrics = {
   mint?: string;
   mintSource?: "r4-env" | "bridge-env" | "unresolved";
   totalCreated: number;  // всего создано за всё время
+  totalCreatedIsLowerBound: boolean;
   createdToday: number;  // создано за сегодня
   totalConsumed: number;  // всего потреблено
   playerBalance: number;
+  playerBalanceKnown: boolean;
   developerBalance: number;
   totalSupply: number;
   dailyConsumption: number;
@@ -1406,6 +1408,13 @@ type BridgeR4Metrics = {
     totalCreated: number;
     totalConsumed: number;
     totalPlayerBalance: number;
+    totalPlayerBalanceKnown: boolean;
+    totalCreatedIsLowerBound: boolean;
+    lowerBoundResourceCount: number;
+    createdCoverageDays: number;
+    createdCoverageStartUtcDate: string | null;
+    createdCoverageEndUtcDate: string | null;
+    productionHistorySource: string;
     deficitRiskCount: number;
     balancedCount: number;
     surplusRiskCount: number;
@@ -2783,10 +2792,31 @@ async function fetchBridgeR4Metrics(): Promise<BridgeR4Metrics> {
 
   const pricesByMint = await fetchPricesUsdByMintViaJupiter(Array.from(trackedMints));
   const productionHistory = await readR4ProductionHistory();
+  const productionHistorySource = productionHistory.source || "manual-seed";
+  const isSeedHistorySource = productionHistorySource.toLowerCase().includes("manual-seed");
+
+  const coverageDates = new Set<string>();
+  for (const resourceEntries of Object.values(productionHistory.resources)) {
+    if (!Array.isArray(resourceEntries)) {
+      continue;
+    }
+    for (const entry of resourceEntries) {
+      if (entry?.utcDateKey && /^\d{4}-\d{2}-\d{2}$/.test(entry.utcDateKey)) {
+        coverageDates.add(entry.utcDateKey);
+      }
+    }
+  }
+  const sortedCoverageDates = Array.from(coverageDates).sort((left, right) => left.localeCompare(right));
+  const createdCoverageStartUtcDate = sortedCoverageDates.length > 0 ? sortedCoverageDates[0] : null;
+  const createdCoverageEndUtcDate =
+    sortedCoverageDates.length > 0 ? sortedCoverageDates[sortedCoverageDates.length - 1] : null;
+  const createdCoverageDays = sortedCoverageDates.length;
 
   let totalCreated = 0;
   let totalConsumed = 0;
   let totalPlayerBalance = 0;
+  let totalPlayerBalanceKnown = true;
+  let lowerBoundResourceCount = 0;
   let deficitRiskCount = 0;
   let balancedCount = 0;
   let surplusRiskCount = 0;
@@ -2820,6 +2850,14 @@ async function fetchBridgeR4Metrics(): Promise<BridgeR4Metrics> {
     const consumedOverall = hasOnchainMintData
       ? Number(Math.max(0, totalCreatedFinal - totalSupply).toFixed(6))
       : 0;
+    const totalCreatedIsLowerBound = isSeedHistorySource || !hasOnchainMintData;
+    if (totalCreatedIsLowerBound) {
+      lowerBoundResourceCount += 1;
+    }
+    const playerBalanceKnown = hasOnchainMintData;
+    if (!playerBalanceKnown) {
+      totalPlayerBalanceKnown = false;
+    }
 
     // Получить создано за сегодня
     const createdByDate = new Map<string, number>();
@@ -2906,9 +2944,11 @@ async function fetchBridgeR4Metrics(): Promise<BridgeR4Metrics> {
       mint,
       mintSource: resource.mint ? resource.mintSource : "unresolved",
       totalCreated: Number(totalCreatedFinal.toFixed(6)),
+      totalCreatedIsLowerBound,
       createdToday,
       totalConsumed: consumedOverall,
       playerBalance,
+      playerBalanceKnown,
       developerBalance,
       totalSupply,
       dailyConsumption,
@@ -2934,6 +2974,13 @@ async function fetchBridgeR4Metrics(): Promise<BridgeR4Metrics> {
       totalCreated: Number(totalCreated.toFixed(6)),
       totalConsumed: Number(totalConsumed.toFixed(6)),
       totalPlayerBalance: Number(totalPlayerBalance.toFixed(6)),
+      totalPlayerBalanceKnown,
+      totalCreatedIsLowerBound: isSeedHistorySource || lowerBoundResourceCount > 0,
+      lowerBoundResourceCount,
+      createdCoverageDays,
+      createdCoverageStartUtcDate,
+      createdCoverageEndUtcDate,
+      productionHistorySource,
       deficitRiskCount,
       balancedCount,
       surplusRiskCount,
