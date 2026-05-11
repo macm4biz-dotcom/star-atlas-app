@@ -2866,6 +2866,21 @@ function App() {
       .join(" ");
   };
 
+  const getTrendMinMax = (values: number[]) => {
+    if (!values.length) {
+      return null;
+    }
+
+    const min = Math.min(...values);
+    const max = Math.max(...values);
+
+    if (!Number.isFinite(min) || !Number.isFinite(max)) {
+      return null;
+    }
+
+    return { min, max };
+  };
+
   return (
     <main className="page">
       <section className="global-ticker" aria-label="Курс ATLAS и POLIS">
@@ -2880,6 +2895,7 @@ function App() {
                     ? "n/a"
                     : `${isUp ? "+" : ""}${token.change24hPct.toFixed(2)}%`;
                 const chartPath = buildSparklinePath(token.trend24h, 240, 64);
+                const minMax = getTrendMinMax(token.trend24h);
 
                 return (
                   <div className="ticker-card" key={token.symbol}>
@@ -2898,6 +2914,20 @@ function App() {
                       }
                     >
                       {token.placeholder ? "n/a" : changeLabel}
+                    </div>
+                    <div className="ticker-card-minmax">
+                      <span>
+                        min 24h:{" "}
+                        {token.placeholder || !minMax
+                          ? "n/a"
+                          : `$${formatTickerPriceUsd(minMax.min)}`}
+                      </span>
+                      <span>
+                        max 24h:{" "}
+                        {token.placeholder || !minMax
+                          ? "n/a"
+                          : `$${formatTickerPriceUsd(minMax.max)}`}
+                      </span>
                     </div>
                     <svg className="ticker-chart" viewBox="0 0 240 64" role="img" aria-label={`${token.symbol} price trend 24h`}>
                       <path

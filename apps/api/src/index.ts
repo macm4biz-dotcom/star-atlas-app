@@ -7495,6 +7495,15 @@ async function fetchCoingecko24hTrend(id: string): Promise<number[]> {
   }
 }
 
+function isValidTickerData(snapshot: StarAtlasTickerSnapshot): boolean {
+  // Valid if at least one token (ATLAS or POLIS) has a non-zero price
+  const atlas = snapshot.tokens.find((t) => t.symbol === "ATLAS");
+  const polis = snapshot.tokens.find((t) => t.symbol === "POLIS");
+  const atlasValid = !!(atlas && atlas.priceUsd > 0);
+  const polisValid = !!(polis && polis.priceUsd > 0);
+  return atlasValid || polisValid;
+}
+
 async function buildStarAtlasTickerSnapshot(now: Date): Promise<StarAtlasTickerSnapshot> {
   const utcDateKey = formatUtcDateKey(now);
   const [ticker, atlasTrend, polisTrend] = await Promise.all([
@@ -7585,12 +7594,25 @@ app.get("/api/market/star-atlas-ticker", async (_request, reply) => {
 
   try {
     const data = await buildStarAtlasTickerSnapshot(now);
-    starAtlasTickerCache = {
-      data,
-      expiresAt: now.getTime() + STAR_ATLAS_TICKER_REFRESH_MS,
-    };
-    return data;
+    
+    // Only update cache if new data is valid; otherwise extend old cache to avoid data loss
+    if (isValidTickerData(data)) {
+      starAtlasTickerCache = {
+        data,
+        expiresAt: now.getTime() + STAR_ATLAS_TICKER_REFRESH_MS,
+      };
+    } else if (starAtlasTickerCache) {
+      // Invalid new data: extend old cache expiry by 50% to survive API issues
+      starAtlasTickerCache.expiresAt = now.getTime() + Math.floor(STAR_ATLAS_TICKER_REFRESH_MS * 1.5);
+    }
+    
+    return starAtlasTickerCache?.data || data;
   } catch (err) {
+    // On fetch error, extend cache expiry to survive network issues
+    if (starAtlasTickerCache) {
+      starAtlasTickerCache.expiresAt = now.getTime() + Math.floor(STAR_ATLAS_TICKER_REFRESH_MS * 1.5);
+      return starAtlasTickerCache.data;
+    }
     return reply.code(502).send({
       error: err instanceof Error ? err.message : "Failed to fetch Star Atlas ticker",
     });
