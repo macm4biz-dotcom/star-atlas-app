@@ -4403,7 +4403,6 @@ function App() {
                     <thead>
                       <tr>
                         <th>Ресурс</th>
-                        <th>Mint</th>
                         <th>Всего Флотов</th>
                         <th>Total Mined</th>
                         <th>У Игроков</th>
@@ -4423,22 +4422,23 @@ function App() {
                           key={idx}
                           className={resource.resourceMint ? "" : "resource-row-no-mint"}
                         >
-                          <td className="resource-name">{resource.resource}</td>
-                          <td>
+                          <td className="resource-name">
                             {resource.resourceMint ? (
-                              <>
-                                <a
-                                  href={`https://solscan.io/token/${resource.resourceMint}`}
-                                  target="_blank"
-                                  rel="noreferrer"
-                                >
-                                  {formatMintShort(resource.resourceMint)}
-                                </a>
-                                <div className="mint-source">{formatMintSourceLabel(resource.resourceMintSource)}</div>
-                              </>
+                              <a
+                                href={`https://solscan.io/token/${resource.resourceMint}`}
+                                target="_blank"
+                                rel="noreferrer"
+                              >
+                                {resource.resource}
+                              </a>
                             ) : (
-                              <span className="mint-source">missing</span>
+                              resource.resource
                             )}
+                            <div className="mint-source">
+                              {resource.resourceMint
+                                ? `${formatMintSourceLabel(resource.resourceMintSource)} · ${formatMintShort(resource.resourceMint)}`
+                                : "missing"}
+                            </div>
                           </td>
                           <td className="resource-total">
                             <strong>{resource.totalFleets}</strong>

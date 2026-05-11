@@ -1644,6 +1644,16 @@ th {
   color: rgba(102, 242, 222, 0.85);
 }
 
+.resources-table .resource-name a {
+  color: inherit;
+  text-decoration: underline;
+  text-decoration-color: rgba(102, 242, 222, 0.5);
+}
+
+.resources-table .resource-name a:hover {
+  text-decoration-color: rgba(102, 242, 222, 0.95);
+}
+
 .resources-table .resource-total {
   text-align: center;
   color: #81f6b5;
