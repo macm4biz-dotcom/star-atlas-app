@@ -7506,18 +7506,31 @@ function isValidTickerData(snapshot: StarAtlasTickerSnapshot): boolean {
 
 async function buildStarAtlasTickerSnapshot(now: Date): Promise<StarAtlasTickerSnapshot> {
   const utcDateKey = formatUtcDateKey(now);
-  const [ticker, atlasTrend, polisTrend] = await Promise.all([
+  const [ticker, atlasTrend, polisTrend, jupiterPrices] = await Promise.all([
     fetchTickerByCoingeckoId(["star-atlas", "star-atlas-dao"]),
     fetchCoingecko24hTrend("star-atlas"),
     fetchCoingecko24hTrend("star-atlas-dao"),
+    fetchPricesUsdByMintViaJupiter([ATLAS_MINT, POLIS_MINT]),
   ]);
 
   const atlasPriceFromTicker = Number(ticker["star-atlas"]?.priceUsd || 0);
   const polisPriceFromTicker = Number(ticker["star-atlas-dao"]?.priceUsd || 0);
+  const atlasPriceFromJupiter = Number(jupiterPrices[ATLAS_MINT] || 0);
+  const polisPriceFromJupiter = Number(jupiterPrices[POLIS_MINT] || 0);
   const atlasPriceFromTrend = atlasTrend.length ? Number(atlasTrend[atlasTrend.length - 1] || 0) : 0;
   const polisPriceFromTrend = polisTrend.length ? Number(polisTrend[polisTrend.length - 1] || 0) : 0;
-  const atlasPrice = atlasPriceFromTicker > 0 ? atlasPriceFromTicker : atlasPriceFromTrend;
-  const polisPrice = polisPriceFromTicker > 0 ? polisPriceFromTicker : polisPriceFromTrend;
+  const atlasPrice =
+    atlasPriceFromTicker > 0
+      ? atlasPriceFromTicker
+      : atlasPriceFromJupiter > 0
+        ? atlasPriceFromJupiter
+        : atlasPriceFromTrend;
+  const polisPrice =
+    polisPriceFromTicker > 0
+      ? polisPriceFromTicker
+      : polisPriceFromJupiter > 0
+        ? polisPriceFromJupiter
+        : polisPriceFromTrend;
 
   const calcChangeFromTrend = (points: number[]) => {
     if (points.length < 2) return null;
