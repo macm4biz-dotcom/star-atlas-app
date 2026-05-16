@@ -7504,6 +7504,63 @@ function isValidTickerData(snapshot: StarAtlasTickerSnapshot): boolean {
   return atlasValid || polisValid;
 }
 
+function normalizeTrend(points: number[]): number[] {
+  return points
+    .map((value) => Number(value))
+    .filter((value) => Number.isFinite(value) && value > 0)
+    .slice(-24);
+}
+
+function hasUsableTrend(points: number[]): boolean {
+  return normalizeTrend(points).length >= 8;
+}
+
+function mergeTickerSnapshot(
+  next: StarAtlasTickerSnapshot,
+  previous: StarAtlasTickerSnapshot,
+): StarAtlasTickerSnapshot {
+  const previousBySymbol = new Map(previous.tokens.map((token) => [token.symbol, token]));
+
+  return {
+    ...next,
+    tokens: next.tokens.map((token) => {
+      if (token.placeholder) {
+        return token;
+      }
+
+      const prevToken = previousBySymbol.get(token.symbol);
+      const nextTrend = normalizeTrend(token.trend24h);
+      const prevTrend = normalizeTrend(prevToken?.trend24h || []);
+      const resolvedPrice =
+        token.priceUsd > 0
+          ? token.priceUsd
+          : prevToken && prevToken.priceUsd > 0
+            ? prevToken.priceUsd
+            : token.priceUsd;
+      const resolvedTrend = hasUsableTrend(nextTrend)
+        ? nextTrend
+        : hasUsableTrend(prevTrend)
+          ? prevTrend
+          : nextTrend.length > 1
+            ? nextTrend
+            : resolvedPrice > 0
+              ? [resolvedPrice, resolvedPrice]
+              : token.trend24h;
+      const resolvedChange =
+        typeof token.change24hPct === "number" && Number.isFinite(token.change24hPct)
+          ? token.change24hPct
+          : prevToken?.change24hPct ?? null;
+
+      return {
+        ...token,
+        priceUsd: resolvedPrice,
+        change24hPct: resolvedChange,
+        trend24h: resolvedTrend,
+      };
+    }),
+  };
+}
+
 async function buildStarAtlasTickerSnapshot(now: Date): Promise<StarAtlasTickerSnapshot> {
   const utcDateKey = formatUtcDateKey(now);
   const [ticker, atlasTrend, polisTrend, jupiterPrices] = await Promise.all([
@@ -7607,11 +7664,14 @@ app.get("/api/market/star-atlas-ticker", async (_request, reply) => {
 
   try {
     const data = await buildStarAtlasTickerSnapshot(now);
+    const mergedData = starAtlasTickerCache
+      ? mergeTickerSnapshot(data, starAtlasTickerCache.data)
+      : data;
     
     // Only update cache if new data is valid; otherwise extend old cache to avoid data loss
-    if (isValidTickerData(data)) {
+    if (isValidTickerData(mergedData)) {
       starAtlasTickerCache = {
-        data,
+        data: mergedData,
         expiresAt: now.getTime() + STAR_ATLAS_TICKER_REFRESH_MS,
       };
     } else if (starAtlasTickerCache) {
@@ -7619,7 +7679,7 @@ app.get("/api/market/star-atlas-ticker", async (_request, reply) => {
       starAtlasTickerCache.expiresAt = now.getTime() + Math.floor(STAR_ATLAS_TICKER_REFRESH_MS * 1.5);
     }
     
-    return starAtlasTickerCache?.data || data;
+    return starAtlasTickerCache?.data || mergedData;
   } catch (err) {
     // On fetch error, extend cache expiry to survive network issues
     if (starAtlasTickerCache) {
