@@ -249,6 +249,33 @@ type BridgeLiveMapResponse = {
   sageActiveProfilesMetric?: BridgeSageActiveProfilesMetric;
 };
 
+type BridgeSageWalletResourceMetric = {
+  key: "food" | "ammunition" | "toolkit" | "fuel";
+  label: string;
+  mint: string;
+  balance: number;
+  dailySpend: number;
+};
+
+type BridgeSageWalletOverviewResponse = {
+  success: boolean;
+  wallet: string;
+  fetchedAt: string;
+  rpcError: string | null;
+  txAnalyzed24h: number;
+  summary: {
+    solBalance: number;
+    atlasBalance: number;
+    polisBalance: number;
+    totalResourcesBalance: number;
+    totalResourcesDailySpend: number;
+    solFeesDaily: number;
+    atlasDailySpend: number;
+    polisDailySpend: number;
+  };
+  resources: BridgeSageWalletResourceMetric[];
+};
+
 type MiningResourceData = {
   resource: string;
   totalFleets: number;
@@ -1002,6 +1029,11 @@ function App() {
     routes: true,
     riskZones: true,
   });
+  const [bridgeSageWalletInput, setBridgeSageWalletInput] = useState("");
+  const [bridgeSageOverview, setBridgeSageOverview] =
+    useState<BridgeSageWalletOverviewResponse | null>(null);
+  const [bridgeSageOverviewLoading, setBridgeSageOverviewLoading] = useState(false);
+  const [bridgeSageOverviewError, setBridgeSageOverviewError] = useState<string | null>(null);
 
   const connectedWalletAddress = publicKey?.toBase58() || "";
   const marketWallet = connectedWalletAddress || manualMarketWallet;
@@ -2371,6 +2403,38 @@ function App() {
     }
   }, [bridgeProfile, bridgeRole, walletAuthToken]);
 
+  const loadBridgeSageWalletOverview = useCallback(async (wallet?: string) => {
+    if (!walletAuthToken) {
+      return;
+    }
+
+    const targetWallet = (wallet || bridgeSageWalletInput || walletAuthUser?.wallet || marketWallet || "").trim();
+    if (!targetWallet) {
+      setBridgeSageOverviewError("Укажи адрес кошелька SAGE.");
+      return;
+    }
+
+    setBridgeSageOverviewLoading(true);
+    setBridgeSageOverviewError(null);
+
+    try {
+      const payload = await apiRequest<BridgeSageWalletOverviewResponse>(
+        `/api/bridge/sage/wallet-overview?wallet=${encodeURIComponent(targetWallet)}`,
+        {
+          headers: {
+            Authorization: `Bearer ${walletAuthToken}`,
+          },
+        },
+      );
+      setBridgeSageOverview(payload);
+      setBridgeSageWalletInput(targetWallet);
+    } catch (error) {
+      setBridgeSageOverviewError(getErrorMessage(error));
+    } finally {
+      setBridgeSageOverviewLoading(false);
+    }
+  }, [bridgeSageWalletInput, marketWallet, walletAuthToken, walletAuthUser?.wallet]);
+
   const runBridgePreflight = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
 
@@ -2572,6 +2636,29 @@ function App() {
       void loadBridgeRuntime();
     }
   }, [activeTab, bridgeAccessActive, bridgeConfig, bridgeLoading, loadBridgeRuntime]);
+
+  useEffect(() => {
+    if (activeTab !== "bridge" || !bridgeAccessActive || bridgeSageOverviewLoading) {
+      return;
+    }
+
+    if (bridgeSageOverview) {
+      return;
+    }
+
+    const preferredWallet = walletAuthUser?.wallet || marketWallet || "";
+    if (preferredWallet) {
+      void loadBridgeSageWalletOverview(preferredWallet);
+    }
+  }, [
+    activeTab,
+    bridgeAccessActive,
+    bridgeSageOverview,
+    bridgeSageOverviewLoading,
+    loadBridgeSageWalletOverview,
+    marketWallet,
+    walletAuthUser?.wallet,
+  ]);
 
   useEffect(() => {
     if (activeTab !== "bridge" || !bridgeAccessActive || !walletAuthToken) {
@@ -3489,6 +3576,99 @@ function App() {
           ) : null}
 
           {bridgeMessage ? <p className="note">{bridgeMessage}</p> : null}
+
+          <article className="bridge-card bridge-card-wide bridge-sage-screen">
+            <div className="bridge-card-head">
+              <h3>SAGE Wallet: Операционный Экран</h3>
+            </div>
+            <p className="bridge-card-lead">
+              Введи кошелек из SAGE и получи агрегированную метрику по ресурсам,
+              суточному расходу и комиссиям Solana.
+            </p>
+
+            <form
+              className="bridge-sage-form"
+              onSubmit={(event) => {
+                event.preventDefault();
+                void loadBridgeSageWalletOverview();
+              }}
+            >
+              <label htmlFor="bridge-sage-wallet">Кошелек SAGE</label>
+              <input
+                id="bridge-sage-wallet"
+                value={bridgeSageWalletInput}
+                onChange={(event) => setBridgeSageWalletInput(event.target.value)}
+                placeholder="Вставь Solana-адрес кошелька"
+              />
+              <button type="submit" disabled={bridgeSageOverviewLoading}>
+                {bridgeSageOverviewLoading ? "Считаем метрики..." : "Показать метрики"}
+              </button>
+            </form>
+
+            {bridgeSageOverviewError ? <p className="error">{bridgeSageOverviewError}</p> : null}
+
+            {bridgeSageOverview ? (
+              <>
+                <p className="bridge-runtime-note">
+                  Wallet: <strong>{bridgeSageOverview.wallet}</strong> · analyzed tx(24h):
+                  <strong> {bridgeSageOverview.txAnalyzed24h}</strong>
+                  {bridgeSageOverview.rpcError ? ` · rpc warning: ${bridgeSageOverview.rpcError}` : ""}
+                </p>
+
+                <div className="stats bridge-sage-stats">
+                  <article>
+                    <p>Всего ресурсов (баланс)</p>
+                    <h2>{bridgeSageOverview.summary.totalResourcesBalance.toLocaleString("ru-RU", { maximumFractionDigits: 2 })}</h2>
+                  </article>
+                  <article>
+                    <p>Суточный расход ресурсов</p>
+                    <h2>{bridgeSageOverview.summary.totalResourcesDailySpend.toLocaleString("ru-RU", { maximumFractionDigits: 2 })}</h2>
+                  </article>
+                  <article>
+                    <p>Суточные комиссии SOL</p>
+                    <h2>{bridgeSageOverview.summary.solFeesDaily.toLocaleString("ru-RU", { minimumFractionDigits: 4, maximumFractionDigits: 6 })}</h2>
+                  </article>
+                  <article>
+                    <p>ATLAS / POLIS (баланс)</p>
+                    <h2>
+                      {bridgeSageOverview.summary.atlasBalance.toLocaleString("ru-RU", { maximumFractionDigits: 2 })}
+                      {" / "}
+                      {bridgeSageOverview.summary.polisBalance.toLocaleString("ru-RU", { maximumFractionDigits: 2 })}
+                    </h2>
+                  </article>
+                </div>
+
+                <div className="table-wrap bridge-sage-table">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Ресурс</th>
+                        <th>Баланс</th>
+                        <th>Суточный расход</th>
+                        <th>Mint</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {bridgeSageOverview.resources.map((resource) => (
+                        <tr key={resource.key}>
+                          <td>{resource.label}</td>
+                          <td>{resource.balance.toLocaleString("ru-RU", { maximumFractionDigits: 2 })}</td>
+                          <td>{resource.dailySpend.toLocaleString("ru-RU", { maximumFractionDigits: 2 })}</td>
+                          <td>{resource.mint.slice(0, 6)}...{resource.mint.slice(-6)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+
+                <p className="timestamp">
+                  Обновлено: {new Date(bridgeSageOverview.fetchedAt).toLocaleString("ru-RU")}
+                </p>
+              </>
+            ) : (
+              <p className="placeholder">Введи кошелек SAGE, чтобы открыть экран метрик.</p>
+            )}
+          </article>
 
           {bridgeWorkspaceView ? (
             <div className="bridge-workspace-toolbar">

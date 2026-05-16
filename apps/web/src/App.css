@@ -1281,6 +1281,46 @@ th {
   grid-column: 1 / -1;
 }
 
+.bridge-sage-screen {
+  margin-top: 12px;
+}
+
+.bridge-sage-form {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 10px;
+  align-items: end;
+  margin-bottom: 10px;
+}
+
+.bridge-sage-form label {
+  grid-column: 1 / -1;
+  color: #a4b8ca;
+  font-size: 13px;
+}
+
+.bridge-sage-form input {
+  border-radius: 10px;
+  border: 1px solid rgba(171, 197, 223, 0.36);
+  background: rgba(8, 13, 19, 0.86);
+  color: #deebf8;
+  padding: 9px 10px;
+}
+
+.bridge-sage-stats {
+  margin-top: 10px;
+}
+
+.bridge-sage-table {
+  margin-top: 12px;
+}
+
+@media (max-width: 760px) {
+  .bridge-sage-form {
+    grid-template-columns: 1fr;
+  }
+}
+
 .bridge-wallet-assets {
   background: rgba(0, 200, 255, 0.05);
   border: 1px solid rgba(0, 200, 255, 0.2);

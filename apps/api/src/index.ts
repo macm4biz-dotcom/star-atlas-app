@@ -7090,6 +7090,199 @@ const POLIS_MINT = "poLisWXnNRwC6oBu1vHiuKQzFjGL4XDSu4g9qjz9qVk";
 const TOKEN_PROGRAM_ID = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
 const TOKEN_2022_PROGRAM_ID = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb";
 
+const BRIDGE_SAGE_RESOURCE_MINTS: Array<{ key: R4ResourceKey; mint: string }> = Object.entries(
+  R4_STAR_ATLAS_DEFAULT_MINTS,
+).map(([key, mint]) => ({ key: key as R4ResourceKey, mint }));
+
+const BRIDGE_SAGE_RESOURCE_LABELS: Record<R4ResourceKey, string> = {
+  food: "Food",
+  ammunition: "Ammunition",
+  toolkit: "Toolkit",
+  fuel: "Fuel",
+};
+
+function parseUiAmountByMintFromTokenBalances(
+  balances: Array<
+    | {
+        owner?: string;
+        mint?: string;
+        uiTokenAmount?: { uiAmount?: number | null; amount?: string; decimals?: number };
+      }
+    | null
+    | undefined
+  >,
+  ownerWallet: string,
+) {
+  const map = new Map<string, number>();
+
+  for (const item of balances) {
+    if (!item?.mint || item.owner !== ownerWallet) {
+      continue;
+    }
+
+    const uiAmount = Number(item.uiTokenAmount?.uiAmount ?? NaN);
+    const rawAmount = Number(item.uiTokenAmount?.amount ?? "0");
+    const decimals = Number(item.uiTokenAmount?.decimals ?? 0);
+
+    const value = Number.isFinite(uiAmount)
+      ? uiAmount
+      : Number.isFinite(rawAmount) && Number.isFinite(decimals)
+        ? rawAmount / Math.pow(10, Math.max(0, decimals))
+        : 0;
+
+    map.set(item.mint, value);
+  }
+
+  return map;
+}
+
+app.get<{
+  Querystring: {
+    wallet?: string;
+    txLimit?: number;
+  };
+}>("/api/bridge/sage/wallet-overview", async (request, reply) => {
+  const session = requireBridgeAccessSession(request, reply);
+  if (!session) return;
+
+  const wallet = normalizeWalletAddress(request.query.wallet || session.wallet || "");
+  if (!wallet || !isValidSolanaWallet(wallet)) {
+    return reply.code(400).send({ error: "Valid Solana wallet is required" });
+  }
+
+  const txLimit = clamp(Number(request.query.txLimit || 150), 20, 400);
+  const walletPubkey = new PublicKey(wallet);
+  const connection = new Connection(SOLANA_RPC_URL, "confirmed");
+
+  const trackedMints = new Set<string>([
+    ...BRIDGE_SAGE_RESOURCE_MINTS.map((resource) => resource.mint),
+    ATLAS_MINT,
+    POLIS_MINT,
+  ]);
+
+  let rpcError: string | null = null;
+
+  try {
+    const [solLamports, tokenAccountsTokenProgram, tokenAccountsToken2022, signatures] =
+      await Promise.all([
+        connection.getBalance(walletPubkey),
+        connection.getParsedTokenAccountsByOwner(walletPubkey, {
+          programId: new PublicKey(TOKEN_PROGRAM_ID),
+        }),
+        connection.getParsedTokenAccountsByOwner(walletPubkey, {
+          programId: new PublicKey(TOKEN_2022_PROGRAM_ID),
+        }),
+        connection.getSignaturesForAddress(walletPubkey, { limit: txLimit }),
+      ]);
+
+    const allAccounts = [...tokenAccountsTokenProgram.value, ...tokenAccountsToken2022.value];
+    const balancesByMint = new Map<string, number>();
+
+    for (const account of allAccounts) {
+      const info = account.account.data.parsed?.info;
+      const mint = String(info?.mint || "").trim();
+      if (!mint || !trackedMints.has(mint)) {
+        continue;
+      }
+
+      const uiAmount = Number(info?.tokenAmount?.uiAmount ?? NaN);
+      const amount = Number(info?.tokenAmount?.amount ?? "0");
+      const decimals = Number(info?.tokenAmount?.decimals ?? 0);
+      const value = Number.isFinite(uiAmount)
+        ? uiAmount
+        : Number.isFinite(amount) && Number.isFinite(decimals)
+          ? amount / Math.pow(10, Math.max(0, decimals))
+          : 0;
+
+      balancesByMint.set(mint, (balancesByMint.get(mint) || 0) + Math.max(0, value));
+    }
+
+    const nowMs = Date.now();
+    const windowStartMs = nowMs - 24 * 60 * 60 * 1000;
+    const signatures24h = signatures.filter((item) => {
+      const ts = Number(item.blockTime || 0) * 1000;
+      return Number.isFinite(ts) && ts >= windowStartMs;
+    });
+
+    const parsedTxs = signatures24h.length
+      ? await connection.getParsedTransactions(
+          signatures24h.map((item) => item.signature),
+          {
+            maxSupportedTransactionVersion: 0,
+            commitment: "confirmed",
+          },
+        )
+      : [];
+
+    let solFeeLamports24h = 0;
+    const spendByMint24h = new Map<string, number>();
+
+    for (const tx of parsedTxs) {
+      const meta = tx?.meta;
+      if (!meta) continue;
+
+      solFeeLamports24h += Number(meta.fee || 0);
+
+      const preByMint = parseUiAmountByMintFromTokenBalances(meta.preTokenBalances || [], wallet);
+      const postByMint = parseUiAmountByMintFromTokenBalances(meta.postTokenBalances || [], wallet);
+      const mintUnion = new Set<string>([...preByMint.keys(), ...postByMint.keys()]);
+
+      for (const mint of mintUnion) {
+        if (!trackedMints.has(mint)) {
+          continue;
+        }
+        const pre = preByMint.get(mint) || 0;
+        const post = postByMint.get(mint) || 0;
+        const delta = post - pre;
+
+        if (delta < 0) {
+          spendByMint24h.set(mint, (spendByMint24h.get(mint) || 0) + Math.abs(delta));
+        }
+      }
+    }
+
+    const resources = BRIDGE_SAGE_RESOURCE_MINTS.map((resource) => {
+      const balance = Number(balancesByMint.get(resource.mint) || 0);
+      const dailySpend = Number(spendByMint24h.get(resource.mint) || 0);
+      return {
+        key: resource.key,
+        label: BRIDGE_SAGE_RESOURCE_LABELS[resource.key],
+        mint: resource.mint,
+        balance,
+        dailySpend,
+      };
+    });
+
+    const totalResourcesBalance = resources.reduce((sum, item) => sum + item.balance, 0);
+    const totalResourcesDailySpend = resources.reduce((sum, item) => sum + item.dailySpend, 0);
+
+    return {
+      success: true,
+      wallet,
+      fetchedAt: new Date().toISOString(),
+      rpcError,
+      txAnalyzed24h: signatures24h.length,
+      summary: {
+        solBalance: solLamports / 1e9,
+        atlasBalance: Number(balancesByMint.get(ATLAS_MINT) || 0),
+        polisBalance: Number(balancesByMint.get(POLIS_MINT) || 0),
+        totalResourcesBalance,
+        totalResourcesDailySpend,
+        solFeesDaily: solFeeLamports24h / 1e9,
+        atlasDailySpend: Number(spendByMint24h.get(ATLAS_MINT) || 0),
+        polisDailySpend: Number(spendByMint24h.get(POLIS_MINT) || 0),
+      },
+      resources,
+    };
+  } catch (err) {
+    rpcError = err instanceof Error ? err.message : String(err);
+    return reply.code(502).send({
+      error: "Failed to load SAGE wallet overview",
+      details: rpcError,
+    });
+  }
+});
+
 app.get("/api/bridge/admin/wallet-assets", async (request, reply) => {
   const session = requireWalletAuthSession(request, reply);
   if (!session) return;
