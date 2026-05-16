@@ -7139,7 +7139,6 @@ function parseUiAmountByMintFromTokenBalances(
 app.get<{
   Querystring: {
     wallet?: string;
-    txLimit?: number;
   };
 }>("/api/bridge/sage/wallet-overview", async (request, reply) => {
   const session = requireBridgeAccessSession(request, reply);
@@ -7150,7 +7149,6 @@ app.get<{
     return reply.code(400).send({ error: "Valid Solana wallet is required" });
   }
 
-  const txLimit = clamp(Number(request.query.txLimit || 80), 20, 200);
   const walletPubkey = new PublicKey(wallet);
   const connection = new Connection(SOLANA_RPC_URL, "confirmed");
 
@@ -7160,9 +7158,8 @@ app.get<{
     POLIS_MINT,
   ]);
 
-  let rpcError: string | null = null;
-
   try {
+    // Fetch only current balances - no tx parsing to avoid RPC rate limits
     const [solLamports, tokenAccountsTokenProgram, tokenAccountsToken2022] =
       await Promise.all([
         connection.getBalance(walletPubkey),
@@ -7196,105 +7193,40 @@ app.get<{
       balancesByMint.set(mint, (balancesByMint.get(mint) || 0) + Math.max(0, value));
     }
 
-    const nowMs = Date.now();
-    const windowStartMs = nowMs - 24 * 60 * 60 * 1000;
-    let signatures24h: Array<{ signature: string; blockTime: number | null }> = [];
-    let parsedTxs: Array<Awaited<ReturnType<Connection["getParsedTransactions"]>>[number]> = [];
-    let txAnalysisError: string | null = null;
-
-    try {
-      const signatures = await connection.getSignaturesForAddress(walletPubkey, { limit: txLimit });
-      signatures24h = signatures
-        .filter((item) => {
-          const ts = Number(item.blockTime || 0) * 1000;
-          return Number.isFinite(ts) && ts >= windowStartMs;
-        })
-        .map((item) => ({ signature: item.signature, blockTime: item.blockTime ?? null }));
-
-      if (signatures24h.length > 0) {
-        const signatureChunks = chunkArray(
-          signatures24h.map((item) => item.signature),
-          40,
-        );
-
-        for (const signatureChunk of signatureChunks) {
-          const chunkTxs = await connection.getParsedTransactions(signatureChunk, {
-            maxSupportedTransactionVersion: 0,
-            commitment: "confirmed",
-          });
-          parsedTxs.push(...chunkTxs);
-        }
-      }
-    } catch (err) {
-      txAnalysisError = err instanceof Error ? err.message : String(err);
-      rpcError = txAnalysisError;
-      signatures24h = [];
-      parsedTxs = [];
-    }
-
-    let solFeeLamports24h = 0;
-    const spendByMint24h = new Map<string, number>();
-
-    for (const tx of parsedTxs) {
-      const meta = tx?.meta;
-      if (!meta) continue;
-
-      solFeeLamports24h += Number(meta.fee || 0);
-
-      const preByMint = parseUiAmountByMintFromTokenBalances(meta.preTokenBalances || [], wallet);
-      const postByMint = parseUiAmountByMintFromTokenBalances(meta.postTokenBalances || [], wallet);
-      const mintUnion = new Set<string>([...preByMint.keys(), ...postByMint.keys()]);
-
-      for (const mint of mintUnion) {
-        if (!trackedMints.has(mint)) {
-          continue;
-        }
-        const pre = preByMint.get(mint) || 0;
-        const post = postByMint.get(mint) || 0;
-        const delta = post - pre;
-
-        if (delta < 0) {
-          spendByMint24h.set(mint, (spendByMint24h.get(mint) || 0) + Math.abs(delta));
-        }
-      }
-    }
-
     const resources = BRIDGE_SAGE_RESOURCE_MINTS.map((resource) => {
       const balance = Number(balancesByMint.get(resource.mint) || 0);
-      const dailySpend = Number(spendByMint24h.get(resource.mint) || 0);
       return {
         key: resource.key,
         label: BRIDGE_SAGE_RESOURCE_LABELS[resource.key],
         mint: resource.mint,
         balance,
-        dailySpend,
+        dailySpend: 0, // Placeholder - can be calculated separately as background job
       };
     });
 
     const totalResourcesBalance = resources.reduce((sum, item) => sum + item.balance, 0);
-    const totalResourcesDailySpend = resources.reduce((sum, item) => sum + item.dailySpend, 0);
 
     return {
       success: true,
       wallet,
       fetchedAt: new Date().toISOString(),
-      rpcError,
-      partial: Boolean(txAnalysisError),
-      txAnalyzed24h: signatures24h.length,
+      rpcError: null,
+      partial: false,
+      txAnalyzed24h: 0,
       summary: {
         solBalance: solLamports / 1e9,
         atlasBalance: Number(balancesByMint.get(ATLAS_MINT) || 0),
         polisBalance: Number(balancesByMint.get(POLIS_MINT) || 0),
         totalResourcesBalance,
-        totalResourcesDailySpend,
-        solFeesDaily: solFeeLamports24h / 1e9,
-        atlasDailySpend: Number(spendByMint24h.get(ATLAS_MINT) || 0),
-        polisDailySpend: Number(spendByMint24h.get(POLIS_MINT) || 0),
+        totalResourcesDailySpend: 0, // Placeholder
+        solFeesDaily: 0, // Placeholder
+        atlasDailySpend: 0, // Placeholder
+        polisDailySpend: 0, // Placeholder
       },
       resources,
     };
   } catch (err) {
-    rpcError = err instanceof Error ? err.message : String(err);
+    const rpcError = err instanceof Error ? err.message : String(err);
     return reply.code(502).send({
       error: "Failed to load SAGE wallet overview",
       details: rpcError,
