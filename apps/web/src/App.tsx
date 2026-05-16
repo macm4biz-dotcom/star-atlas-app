@@ -277,7 +277,22 @@ type BridgeSageWalletOverviewResponse = {
 };
 
 type BridgeSageBalanceScope = "wallet" | "sage";
-type BridgeSageSectionFilter = "all" | "food" | "ammunition" | "toolkit" | "fuel";
+type BridgeSageSectionFilter =
+  | "all"
+  | "food"
+  | "ammunition"
+  | "toolkit"
+  | "fuel"
+  | "ships";
+type BridgeSageShipSizeFilter = "all" | "large" | "capital";
+
+type BridgeSageShipMetric = {
+  id: string;
+  name: string;
+  quantity: number;
+  estimatedValueUsd: number;
+  sizeClass: BridgeSageShipSizeFilter;
+};
 
 type MiningResourceData = {
   resource: string;
@@ -1042,6 +1057,8 @@ function App() {
     useState<BridgeSageBalanceScope>("sage");
   const [bridgeSageSectionFilter, setBridgeSageSectionFilter] =
     useState<BridgeSageSectionFilter>("all");
+  const [bridgeSageShipSizeFilter, setBridgeSageShipSizeFilter] =
+    useState<BridgeSageShipSizeFilter>("all");
 
   // SAGE filters
   const [bridgeSageShowSol, setBridgeSageShowSol] = useState(true);
@@ -2463,6 +2480,52 @@ function App() {
     });
   }, [bridgeSageOverview, bridgeSageResourcesFilter, bridgeSageSectionFilter]);
 
+  const classifySageShipSize = (name: string): BridgeSageShipSizeFilter => {
+    const normalized = name.toLowerCase();
+    if (
+      normalized.includes("capital") ||
+      normalized.includes("titan") ||
+      normalized.includes("dread") ||
+      normalized.includes("carrier") ||
+      normalized.includes("command")
+    ) {
+      return "capital";
+    }
+
+    if (
+      normalized.includes("large") ||
+      normalized.includes("heavy") ||
+      normalized.includes("freighter") ||
+      normalized.includes("frigate") ||
+      normalized.includes("destroyer") ||
+      normalized.includes("cruiser")
+    ) {
+      return "large";
+    }
+
+    return "all";
+  };
+
+  const filteredBridgeSageShips = useMemo(() => {
+    const source = visibleAssets.filter(
+      (asset) => asset.class === "Ship" && asset.isStarAtlas === true,
+    );
+
+    const ships: BridgeSageShipMetric[] = source.map((asset) => ({
+      id: asset.id,
+      name: asset.name,
+      quantity: asset.quantity,
+      estimatedValueUsd: asset.estimatedValueUsd,
+      sizeClass: classifySageShipSize(asset.name),
+    }));
+
+    if (bridgeSageShipSizeFilter === "all") {
+      return ships;
+    }
+
+    return ships.filter((ship) => ship.sizeClass === bridgeSageShipSizeFilter);
+  }, [bridgeSageShipSizeFilter, visibleAssets]);
+
   const runBridgePreflight = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
 
@@ -3678,6 +3741,29 @@ function App() {
                       <option value="ammunition">Ammunition</option>
                       <option value="toolkit">Toolkit</option>
                       <option value="fuel">Fuel</option>
+                      <option value="ships">Корабли</option>
+                    </select>
+                  </div>
+                </fieldset>
+              ) : null}
+
+              {bridgeSageBalanceScope === "sage" && bridgeSageSectionFilter === "ships" ? (
+                <fieldset className="bridge-sage-filters">
+                  <legend>Класс кораблей SAGE:</legend>
+                  <div className="form-group">
+                    <label htmlFor="bridge-sage-ship-size">Выбери класс кораблей</label>
+                    <select
+                      id="bridge-sage-ship-size"
+                      value={bridgeSageShipSizeFilter}
+                      onChange={(event) =>
+                        setBridgeSageShipSizeFilter(
+                          event.target.value as BridgeSageShipSizeFilter,
+                        )
+                      }
+                    >
+                      <option value="all">Все корабли</option>
+                      <option value="large">Только большие</option>
+                      <option value="capital">Только капитальные</option>
                     </select>
                   </div>
                 </fieldset>
@@ -3715,7 +3801,7 @@ function App() {
                 </fieldset>
               ) : null}
 
-              {bridgeSageBalanceScope === "sage" ? (
+              {bridgeSageBalanceScope === "sage" && bridgeSageSectionFilter !== "ships" ? (
                 <fieldset className="bridge-sage-filters">
                   <legend>Показывать ресурсы:</legend>
                   <div className="filter-row">
@@ -3790,6 +3876,36 @@ function App() {
                         <h2>{bridgeSageOverview.summary.solFeesDaily.toLocaleString("ru-RU", { minimumFractionDigits: 4, maximumFractionDigits: 6 })}</h2>
                       </article>
                     </>
+                  ) : bridgeSageSectionFilter === "ships" ? (
+                    <>
+                      <article>
+                        <p>Кораблей в SAGE (по фильтру)</p>
+                        <h2>
+                          {filteredBridgeSageShips.reduce(
+                            (sum, ship) => sum + ship.quantity,
+                            0,
+                          )}
+                        </h2>
+                      </article>
+                      <article>
+                        <p>Позиции кораблей</p>
+                        <h2>
+                          {filteredBridgeSageShips.length}
+                        </h2>
+                      </article>
+                      <article>
+                        <p>Оценка стоимости кораблей, USD</p>
+                        <h2>
+                          {filteredBridgeSageShips
+                            .reduce((sum, ship) => sum + ship.estimatedValueUsd, 0)
+                            .toLocaleString("ru-RU", { maximumFractionDigits: 2 })}
+                        </h2>
+                      </article>
+                      <article>
+                        <p>Суточные комиссии SOL</p>
+                        <h2>{bridgeSageOverview.summary.solFeesDaily.toLocaleString("ru-RU", { minimumFractionDigits: 4, maximumFractionDigits: 6 })}</h2>
+                      </article>
+                    </>
                   ) : (
                     <>
                       <article>
@@ -3819,24 +3935,49 @@ function App() {
                 {bridgeSageBalanceScope === "sage" ? (
                   <div className="table-wrap bridge-sage-table">
                     <table>
-                      <thead>
-                        <tr>
-                          <th>Раздел SAGE</th>
-                          <th>Баланс</th>
-                          <th>Суточный расход</th>
-                          <th>Mint</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {filteredBridgeSageResources.map((resource) => (
-                          <tr key={resource.key}>
-                            <td>{resource.label}</td>
-                            <td>{resource.balance.toLocaleString("ru-RU", { maximumFractionDigits: 2 })}</td>
-                            <td>{resource.dailySpend.toLocaleString("ru-RU", { maximumFractionDigits: 2 })}</td>
-                            <td>{resource.mint.slice(0, 6)}...{resource.mint.slice(-6)}</td>
-                          </tr>
-                        ))}
-                      </tbody>
+                      {bridgeSageSectionFilter === "ships" ? (
+                        <>
+                          <thead>
+                            <tr>
+                              <th>Корабль</th>
+                              <th>Класс</th>
+                              <th>Количество</th>
+                              <th>Оценка USD</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {filteredBridgeSageShips.map((ship) => (
+                              <tr key={ship.id}>
+                                <td>{ship.name}</td>
+                                <td>{ship.sizeClass === "capital" ? "Капитальный" : ship.sizeClass === "large" ? "Большой" : "Обычный"}</td>
+                                <td>{ship.quantity.toLocaleString("ru-RU")}</td>
+                                <td>{ship.estimatedValueUsd.toLocaleString("ru-RU", { maximumFractionDigits: 2 })}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </>
+                      ) : (
+                        <>
+                          <thead>
+                            <tr>
+                              <th>Раздел SAGE</th>
+                              <th>Баланс</th>
+                              <th>Суточный расход</th>
+                              <th>Mint</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {filteredBridgeSageResources.map((resource) => (
+                              <tr key={resource.key}>
+                                <td>{resource.label}</td>
+                                <td>{resource.balance.toLocaleString("ru-RU", { maximumFractionDigits: 2 })}</td>
+                                <td>{resource.dailySpend.toLocaleString("ru-RU", { maximumFractionDigits: 2 })}</td>
+                                <td>{resource.mint.slice(0, 6)}...{resource.mint.slice(-6)}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </>
+                      )}
                     </table>
                   </div>
                 ) : (
