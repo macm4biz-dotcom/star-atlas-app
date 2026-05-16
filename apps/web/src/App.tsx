@@ -1035,6 +1035,14 @@ function App() {
   const [bridgeSageOverviewLoading, setBridgeSageOverviewLoading] = useState(false);
   const [bridgeSageOverviewError, setBridgeSageOverviewError] = useState<string | null>(null);
   const [bridgeSageAutoloadAttempted, setBridgeSageAutoloadAttempted] = useState(false);
+  
+  // SAGE filters
+  const [bridgeSageShowSol, setBridgeSageShowSol] = useState(true);
+  const [bridgeSageShowAtlas, setBridgeSageShowAtlas] = useState(true);
+  const [bridgeSageShowPolis, setBridgeSageShowPolis] = useState(true);
+  const [bridgeSageResourcesFilter, setBridgeSageResourcesFilter] = useState<Set<string>>(
+    new Set(["food", "ammunition", "toolkit", "fuel"]),
+  );
 
   const connectedWalletAddress = publicKey?.toBase58() || "";
   const marketWallet = connectedWalletAddress || manualMarketWallet;
@@ -3600,13 +3608,78 @@ function App() {
                 void loadBridgeSageWalletOverview();
               }}
             >
-              <label htmlFor="bridge-sage-wallet">Кошелек SAGE</label>
-              <input
-                id="bridge-sage-wallet"
-                value={bridgeSageWalletInput}
-                onChange={(event) => setBridgeSageWalletInput(event.target.value)}
-                placeholder="Вставь Solana-адрес кошелька"
-              />
+              <div className="form-group">
+                <label htmlFor="bridge-sage-wallet">Кошелек SAGE</label>
+                <input
+                  id="bridge-sage-wallet"
+                  value={bridgeSageWalletInput}
+                  onChange={(event) => setBridgeSageWalletInput(event.target.value)}
+                  placeholder="Вставь Solana-адрес кошелька"
+                />
+              </div>
+
+              <fieldset className="bridge-sage-filters">
+                <legend>Показывать активы:</legend>
+                <div className="filter-row">
+                  <label>
+                    <input
+                      type="checkbox"
+                      checked={bridgeSageShowSol}
+                      onChange={(e) => setBridgeSageShowSol(e.target.checked)}
+                    />
+                    SOL (основной токен)
+                  </label>
+                  <label>
+                    <input
+                      type="checkbox"
+                      checked={bridgeSageShowAtlas}
+                      onChange={(e) => setBridgeSageShowAtlas(e.target.checked)}
+                    />
+                    ATLAS (игровой токен)
+                  </label>
+                  <label>
+                    <input
+                      type="checkbox"
+                      checked={bridgeSageShowPolis}
+                      onChange={(e) => setBridgeSageShowPolis(e.target.checked)}
+                    />
+                    POLIS (дополнительный токен)
+                  </label>
+                </div>
+              </fieldset>
+
+              <fieldset className="bridge-sage-filters">
+                <legend>Показывать ресурсы:</legend>
+                <div className="filter-row">
+                  {["food", "ammunition", "toolkit", "fuel"].map((resourceKey) => {
+                    const labels: Record<string, string> = {
+                      food: "🍖 Еда (Food)",
+                      ammunition: "💣 Боеприпасы (Ammunition)",
+                      toolkit: "🔧 Инструменты (Toolkit)",
+                      fuel: "⛽ Топливо (Fuel)",
+                    };
+                    return (
+                      <label key={resourceKey}>
+                        <input
+                          type="checkbox"
+                          checked={bridgeSageResourcesFilter.has(resourceKey)}
+                          onChange={(e) => {
+                            const newFilter = new Set(bridgeSageResourcesFilter);
+                            if (e.target.checked) {
+                              newFilter.add(resourceKey);
+                            } else {
+                              newFilter.delete(resourceKey);
+                            }
+                            setBridgeSageResourcesFilter(newFilter);
+                          }}
+                        />
+                        {labels[resourceKey]}
+                      </label>
+                    );
+                  })}
+                </div>
+              </fieldset>
+
               <button type="submit" disabled={bridgeSageOverviewLoading}>
                 {bridgeSageOverviewLoading ? "Считаем метрики..." : "Показать метрики"}
               </button>
@@ -3623,6 +3696,12 @@ function App() {
                 </p>
 
                 <div className="stats bridge-sage-stats">
+                  {bridgeSageShowSol ? (
+                    <article>
+                      <p>SOL (основной токен)</p>
+                      <h2>{bridgeSageOverview.summary.solBalance.toLocaleString("ru-RU", { minimumFractionDigits: 4, maximumFractionDigits: 6 })}</h2>
+                    </article>
+                  ) : null}
                   <article>
                     <p>Всего ресурсов (баланс)</p>
                     <h2>{bridgeSageOverview.summary.totalResourcesBalance.toLocaleString("ru-RU", { maximumFractionDigits: 2 })}</h2>
@@ -3635,14 +3714,16 @@ function App() {
                     <p>Суточные комиссии SOL</p>
                     <h2>{bridgeSageOverview.summary.solFeesDaily.toLocaleString("ru-RU", { minimumFractionDigits: 4, maximumFractionDigits: 6 })}</h2>
                   </article>
-                  <article>
-                    <p>ATLAS / POLIS (баланс)</p>
-                    <h2>
-                      {bridgeSageOverview.summary.atlasBalance.toLocaleString("ru-RU", { maximumFractionDigits: 2 })}
-                      {" / "}
-                      {bridgeSageOverview.summary.polisBalance.toLocaleString("ru-RU", { maximumFractionDigits: 2 })}
-                    </h2>
-                  </article>
+                  {(bridgeSageShowAtlas || bridgeSageShowPolis) ? (
+                    <article>
+                      <p>ATLAS / POLIS (баланс)</p>
+                      <h2>
+                        {bridgeSageShowAtlas ? bridgeSageOverview.summary.atlasBalance.toLocaleString("ru-RU", { maximumFractionDigits: 2 }) : "-"}
+                        {" / "}
+                        {bridgeSageShowPolis ? bridgeSageOverview.summary.polisBalance.toLocaleString("ru-RU", { maximumFractionDigits: 2 }) : "-"}
+                      </h2>
+                    </article>
+                  ) : null}
                 </div>
 
                 <div className="table-wrap bridge-sage-table">
@@ -3656,14 +3737,16 @@ function App() {
                       </tr>
                     </thead>
                     <tbody>
-                      {bridgeSageOverview.resources.map((resource) => (
-                        <tr key={resource.key}>
-                          <td>{resource.label}</td>
-                          <td>{resource.balance.toLocaleString("ru-RU", { maximumFractionDigits: 2 })}</td>
-                          <td>{resource.dailySpend.toLocaleString("ru-RU", { maximumFractionDigits: 2 })}</td>
-                          <td>{resource.mint.slice(0, 6)}...{resource.mint.slice(-6)}</td>
-                        </tr>
-                      ))}
+                      {bridgeSageOverview.resources
+                        .filter((resource) => bridgeSageResourcesFilter.has(resource.key))
+                        .map((resource) => (
+                          <tr key={resource.key}>
+                            <td>{resource.label}</td>
+                            <td>{resource.balance.toLocaleString("ru-RU", { maximumFractionDigits: 2 })}</td>
+                            <td>{resource.dailySpend.toLocaleString("ru-RU", { maximumFractionDigits: 2 })}</td>
+                            <td>{resource.mint.slice(0, 6)}...{resource.mint.slice(-6)}</td>
+                          </tr>
+                        ))}
                     </tbody>
                   </table>
                 </div>

@@ -1287,24 +1287,90 @@ th {
 
 .bridge-sage-form {
   display: grid;
-  grid-template-columns: 1fr auto;
-  gap: 10px;
-  align-items: end;
+  grid-template-columns: 1fr;
+  gap: 12px;
   margin-bottom: 10px;
 }
 
+.bridge-sage-form .form-group {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 6px;
+}
+
 .bridge-sage-form label {
-  grid-column: 1 / -1;
   color: #a4b8ca;
   font-size: 13px;
 }
 
-.bridge-sage-form input {
+.bridge-sage-form input[type="text"] {
   border-radius: 10px;
   border: 1px solid rgba(171, 197, 223, 0.36);
   background: rgba(8, 13, 19, 0.86);
   color: #deebf8;
   padding: 9px 10px;
+}
+
+.bridge-sage-form button {
+  align-self: flex-start;
+  padding: 8px 16px;
+  border-radius: 8px;
+  border: 1px solid rgba(87, 203, 255, 0.4);
+  background: linear-gradient(135deg, rgba(87, 203, 255, 0.18), rgba(102, 242, 222, 0.08));
+  color: #57cbff;
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 13px;
+  transition: all 0.2s ease;
+}
+
+.bridge-sage-form button:hover:not(:disabled) {
+  border-color: rgba(87, 203, 255, 0.6);
+  background: linear-gradient(135deg, rgba(87, 203, 255, 0.28), rgba(102, 242, 222, 0.14));
+}
+
+.bridge-sage-form button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.bridge-sage-filters {
+  border: 1px solid rgba(158, 230, 255, 0.2);
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: rgba(6, 18, 24, 0.5);
+  margin: 0;
+}
+
+.bridge-sage-filters legend {
+  color: #57cbff;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 0 4px;
+  margin-bottom: 8px;
+}
+
+.filter-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.filter-row label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: #b8d3df;
+  font-size: 12px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.filter-row input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+  accent-color: #57cbff;
 }
 
 .bridge-sage-stats {
@@ -1313,6 +1379,13 @@ th {
 
 .bridge-sage-table {
   margin-top: 12px;
+}
+
+@media (max-width: 760px) {
+  .filter-row {
+    flex-direction: column;
+    gap: 8px;
+  }
 }
 
 @media (max-width: 760px) {
