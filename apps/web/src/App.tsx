@@ -284,7 +284,16 @@ type BridgeSageSectionFilter =
   | "toolkit"
   | "fuel"
   | "ships";
-type BridgeSageShipSizeFilter = "all" | "large" | "capital";
+type BridgeSageShipSizeFilter =
+  | "all"
+  | "xx-small"
+  | "x-small"
+  | "small"
+  | "medium"
+  | "large"
+  | "capital"
+  | "commander"
+  | "titan";
 
 type BridgeSageShipMetric = {
   id: string;
@@ -2482,28 +2491,46 @@ function App() {
 
   const classifySageShipSize = (name: string): BridgeSageShipSizeFilter => {
     const normalized = name.toLowerCase();
-    if (
-      normalized.includes("capital") ||
-      normalized.includes("titan") ||
-      normalized.includes("dread") ||
-      normalized.includes("carrier") ||
-      normalized.includes("command")
-    ) {
+    const compact = normalized.replace(/\s+/g, "");
+
+    if (normalized.includes("xx-small") || compact.includes("xxsmall")) {
+      return "xx-small";
+    }
+    if (normalized.includes("x-small") || compact.includes("xsmall")) {
+      return "x-small";
+    }
+    if (normalized.includes("commander") || normalized.includes("command")) {
+      return "commander";
+    }
+    if (normalized.includes("titan")) {
+      return "titan";
+    }
+    if (normalized.includes("capital") || normalized.includes("dread") || normalized.includes("carrier")) {
       return "capital";
     }
-
-    if (
-      normalized.includes("large") ||
-      normalized.includes("heavy") ||
-      normalized.includes("freighter") ||
-      normalized.includes("frigate") ||
-      normalized.includes("destroyer") ||
-      normalized.includes("cruiser")
-    ) {
+    if (normalized.includes("large") || normalized.includes("heavy") || normalized.includes("freighter") || normalized.includes("destroyer") || normalized.includes("cruiser")) {
       return "large";
     }
+    if (normalized.includes("medium") || normalized.includes("frigate")) {
+      return "medium";
+    }
+    if (normalized.includes("small")) {
+      return "small";
+    }
 
-    return "all";
+    return "medium";
+  };
+
+  const bridgeSageShipClassLabels: Record<BridgeSageShipSizeFilter, string> = {
+    all: "ALL",
+    "xx-small": "XX-SMALL",
+    "x-small": "X-SMALL",
+    small: "SMALL",
+    medium: "MEDIUM",
+    large: "LARGE",
+    capital: "CAPITAL",
+    commander: "COMMANDER",
+    titan: "TITAN",
   };
 
   const filteredBridgeSageShips = useMemo(() => {
@@ -3762,8 +3789,14 @@ function App() {
                       }
                     >
                       <option value="all">Все корабли</option>
-                      <option value="large">Только большие</option>
-                      <option value="capital">Только капитальные</option>
+                      <option value="xx-small">XX-SMALL</option>
+                      <option value="x-small">X-SMALL</option>
+                      <option value="small">SMALL</option>
+                      <option value="medium">MEDIUM</option>
+                      <option value="large">LARGE</option>
+                      <option value="capital">CAPITAL</option>
+                      <option value="commander">COMMANDER</option>
+                      <option value="titan">TITAN</option>
                     </select>
                   </div>
                 </fieldset>
@@ -3949,7 +3982,7 @@ function App() {
                             {filteredBridgeSageShips.map((ship) => (
                               <tr key={ship.id}>
                                 <td>{ship.name}</td>
-                                <td>{ship.sizeClass === "capital" ? "Капитальный" : ship.sizeClass === "large" ? "Большой" : "Обычный"}</td>
+                                <td>{bridgeSageShipClassLabels[ship.sizeClass]}</td>
                                 <td>{ship.quantity.toLocaleString("ru-RU")}</td>
                                 <td>{ship.estimatedValueUsd.toLocaleString("ru-RU", { maximumFractionDigits: 2 })}</td>
                               </tr>
