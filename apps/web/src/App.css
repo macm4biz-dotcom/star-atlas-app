@@ -1311,6 +1311,14 @@ th {
   padding: 9px 10px;
 }
 
+.bridge-sage-form select {
+  border-radius: 10px;
+  border: 1px solid rgba(171, 197, 223, 0.36);
+  background: rgba(8, 13, 19, 0.86);
+  color: #deebf8;
+  padding: 9px 10px;
+}
+
 .bridge-sage-form button {
   align-self: flex-start;
   padding: 8px 16px;
@@ -1367,6 +1375,13 @@ th {
 }
 
 .filter-row input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+  accent-color: #57cbff;
+}
+
+.filter-row input[type="radio"] {
   width: 16px;
   height: 16px;
   cursor: pointer;
