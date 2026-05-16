@@ -1034,6 +1034,7 @@ function App() {
     useState<BridgeSageWalletOverviewResponse | null>(null);
   const [bridgeSageOverviewLoading, setBridgeSageOverviewLoading] = useState(false);
   const [bridgeSageOverviewError, setBridgeSageOverviewError] = useState<string | null>(null);
+  const [bridgeSageAutoloadAttempted, setBridgeSageAutoloadAttempted] = useState(false);
 
   const connectedWalletAddress = publicKey?.toBase58() || "";
   const marketWallet = connectedWalletAddress || manualMarketWallet;
@@ -2642,17 +2643,23 @@ function App() {
       return;
     }
 
+    if (bridgeSageAutoloadAttempted) {
+      return;
+    }
+
     if (bridgeSageOverview) {
       return;
     }
 
     const preferredWallet = walletAuthUser?.wallet || marketWallet || "";
     if (preferredWallet) {
+      setBridgeSageAutoloadAttempted(true);
       void loadBridgeSageWalletOverview(preferredWallet);
     }
   }, [
     activeTab,
     bridgeAccessActive,
+    bridgeSageAutoloadAttempted,
     bridgeSageOverview,
     bridgeSageOverviewLoading,
     loadBridgeSageWalletOverview,

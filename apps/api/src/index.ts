@@ -7150,7 +7150,7 @@ app.get<{
     return reply.code(400).send({ error: "Valid Solana wallet is required" });
   }
 
-  const txLimit = clamp(Number(request.query.txLimit || 150), 20, 400);
+  const txLimit = clamp(Number(request.query.txLimit || 80), 20, 200);
   const walletPubkey = new PublicKey(wallet);
   const connection = new Connection(SOLANA_RPC_URL, "confirmed");
 
@@ -7163,7 +7163,7 @@ app.get<{
   let rpcError: string | null = null;
 
   try {
-    const [solLamports, tokenAccountsTokenProgram, tokenAccountsToken2022, signatures] =
+    const [solLamports, tokenAccountsTokenProgram, tokenAccountsToken2022] =
       await Promise.all([
         connection.getBalance(walletPubkey),
         connection.getParsedTokenAccountsByOwner(walletPubkey, {
@@ -7172,7 +7172,6 @@ app.get<{
         connection.getParsedTokenAccountsByOwner(walletPubkey, {
           programId: new PublicKey(TOKEN_2022_PROGRAM_ID),
         }),
-        connection.getSignaturesForAddress(walletPubkey, { limit: txLimit }),
       ]);
 
     const allAccounts = [...tokenAccountsTokenProgram.value, ...tokenAccountsToken2022.value];
@@ -7199,20 +7198,39 @@ app.get<{
 
     const nowMs = Date.now();
     const windowStartMs = nowMs - 24 * 60 * 60 * 1000;
-    const signatures24h = signatures.filter((item) => {
-      const ts = Number(item.blockTime || 0) * 1000;
-      return Number.isFinite(ts) && ts >= windowStartMs;
-    });
+    let signatures24h: Array<{ signature: string; blockTime: number | null }> = [];
+    let parsedTxs: Array<Awaited<ReturnType<Connection["getParsedTransactions"]>>[number]> = [];
+    let txAnalysisError: string | null = null;
 
-    const parsedTxs = signatures24h.length
-      ? await connection.getParsedTransactions(
+    try {
+      const signatures = await connection.getSignaturesForAddress(walletPubkey, { limit: txLimit });
+      signatures24h = signatures
+        .filter((item) => {
+          const ts = Number(item.blockTime || 0) * 1000;
+          return Number.isFinite(ts) && ts >= windowStartMs;
+        })
+        .map((item) => ({ signature: item.signature, blockTime: item.blockTime ?? null }));
+
+      if (signatures24h.length > 0) {
+        const signatureChunks = chunkArray(
           signatures24h.map((item) => item.signature),
-          {
+          40,
+        );
+
+        for (const signatureChunk of signatureChunks) {
+          const chunkTxs = await connection.getParsedTransactions(signatureChunk, {
             maxSupportedTransactionVersion: 0,
             commitment: "confirmed",
-          },
-        )
-      : [];
+          });
+          parsedTxs.push(...chunkTxs);
+        }
+      }
+    } catch (err) {
+      txAnalysisError = err instanceof Error ? err.message : String(err);
+      rpcError = txAnalysisError;
+      signatures24h = [];
+      parsedTxs = [];
+    }
 
     let solFeeLamports24h = 0;
     const spendByMint24h = new Map<string, number>();
@@ -7261,6 +7279,7 @@ app.get<{
       wallet,
       fetchedAt: new Date().toISOString(),
       rpcError,
+      partial: Boolean(txAnalysisError),
       txAnalyzed24h: signatures24h.length,
       summary: {
         solBalance: solLamports / 1e9,
